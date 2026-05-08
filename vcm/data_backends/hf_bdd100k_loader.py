@@ -204,7 +204,11 @@ def load_hf_bdd100k(
     print("Loading %s (split=%s, max_samples=%s) from HuggingFace ..." % (
         hf_dataset_name, split, max_samples if max_samples else "all"
     ))
-    ds = load_dataset(hf_dataset_name, split=split, trust_remote_code=True)
+    try:
+        ds = load_dataset(hf_dataset_name, split=split, trust_remote_code=True)
+    except TypeError:
+        # Older datasets versions do not support trust_remote_code
+        ds = load_dataset(hf_dataset_name, split=split)
 
     if max_samples and max_samples > 0:
         ds = ds.select(range(min(max_samples, len(ds))))
