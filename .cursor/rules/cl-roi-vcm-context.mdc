@@ -1,0 +1,98 @@
+---
+description: Persistent project memory for CL-ROI-VCM research (NCS/Palette_v2). Always apply so the assistant never forgets what has been built.
+alwaysApply: true
+---
+
+# CL-ROI-VCM: Project Context (Palette_v2)
+
+## Research identity
+- Owner: Minh (NCS, UET-VNU)
+- Repo: https://github.com/NgocMinhUET/Palette_v2
+- Active branch: `feature/cl-roi-vcm` (committed and pushed)
+
+## What this project is
+Extension of the released Palette A3C backbone (human RTVC) toward **Video Coding for Machines (VCM)**.  
+**This is NOT a full WebRTC/Echo reproduction of Palette.**  
+It is a trace-driven VCM simulator + task-aware A3C controller.
+
+## Key design decisions (do not change without asking Minh)
+
+| Aspect | Palette (original) | CL-ROI-VCM (new) |
+|--------|--------------------|-----------------|
+| State | SI/TI, CRF, delay, loss | 9-D: `[bw, rtt, loss, qp_prev, bitrate_prev, roi_area, obj_count, mean_conf, motion]` |
+| Action | delta-CRF (7 steps) | `[QP_base ∈ {24,28,32,36,40}] × [roi_offset ∈ {-6,-3,0,3}]` → A_DIM=20 |
+| Reward | human QoE | `α·u_task_hat − β·bitrate − γ·delay` — **NO mAP online** |
+| Env | your_env.py (missing) | `vcm/vcm_env.py` CSV-driven trace simulator |
+| Agent | `a3c_agent.py` TF1+tflearn | `vcm/a3c_agent_vcm.py` same backbone, S_INFO=9 |
+
+## Critical invariant
+- **`u_task_hat`** = online reward signal (heuristic or sklearn-regressor).  
+- **`u_task_gt`** = offline-only (CSV profile, oracle policy, evaluation). Never used as RL reward.  
+- **mAP** is never computed online.
+
+## File layout
+
+```
+Palette_v2/
+├── train_palette.py, a3c_agent.py, load_trace.py   ← originals, DO NOT MODIFY
+├── requirements.txt                                  ← TF1.15, tflearn, multiprocess
+├── requirements_vcm.txt                              ← adds scikit-learn
+├── vcm/
+│   ├── vcm_config.py          S_INFO=9, A_DIM=20, decode_action, reward fns
+│   ├── a3c_agent_vcm.py       TF1.x+tflearn, split_net[0:3]+split_task[3:9], GRU-16
+│   ├── vcm_env.py             CSV lookup + trace bandwidth overlay
+│   ├── task_utility_estimator.py   heuristic → RF/MLP when sklearn present
+│   ├── roi_task_extractor.py  summarize_from_boxes (geometry + motion proxy)
+│   ├── build_dummy_offline_profile.py  10 videos × 600 frames × 20 actions = 120k rows
+│   ├── train_vcm.py           A3C train; --num_agents 1 for single-process
+│   ├── test_vcm.py            policies: rl|uniform_qp|fixed_roi|random|oracle
+│   ├── evaluate_vcm.py        summary table + task_per_bitrate metric
+│   └── README_VCM.md
+├── data/offline_profiles/dummy_vcm_profile.csv   (gitignored, regenerate via build script)
+└── results/vcm_logs/, results/vcm_models/        (gitignored)
+```
+
+## How to run on server
+
+```bash
+git clone https://github.com/NgocMinhUET/Palette_v2.git
+cd Palette_v2
+git checkout feature/cl-roi-vcm
+pip install -r requirements.txt
+pip install -r requirements_vcm.txt   # optional sklearn
+
+python vcm/build_dummy_offline_profile.py
+
+python vcm/train_vcm.py \
+  --profile_csv data/offline_profiles/dummy_vcm_profile.csv \
+  --trace_dir traces \
+  --num_agents 1 \
+  --episodes 400 \
+  --log_dir results/vcm_logs \
+  --model_dir results/vcm_models
+
+python vcm/test_vcm.py --policy oracle     --max_steps 4000
+python vcm/test_vcm.py --policy uniform_qp --max_steps 4000
+python vcm/test_vcm.py --policy fixed_roi  --max_steps 4000
+python vcm/test_vcm.py --policy rl \
+  --model_path results/vcm_models/nn_model_ep_400.ckpt --max_steps 4000
+
+python vcm/evaluate_vcm.py
+```
+
+## What is synthetic / to replace with real data
+
+| Item | Status | How to replace |
+|------|--------|----------------|
+| `dummy_vcm_profile.csv` | Synthetic | Re-encode real videos; fill rows via `roi_task_extractor` + detector output |
+| `u_task_gt` | Formula-based | Compute offline: mAP/IDF1/mIoU per (video, frame, qp_base, delta_qp_roi) |
+| `u_task_hat` | Heuristic | `TaskUtilityEstimator.fit_from_csv(real_profile.csv)` with sklearn |
+| Bandwidth traces | Falls back to CSV | Supply real RMCAT/5G traces in `traces/` (timestamp bw format) |
+
+## Dependencies (server)
+- Python 3.6–3.9
+- tensorflow==1.15.x (or compatible compat.v1 wrapper)
+- tflearn==0.3.2
+- multiprocess>=0.70
+- numpy~=1.19
+- scikit-learn>=0.24 (optional, for RF estimator)
