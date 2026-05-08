@@ -194,9 +194,11 @@ def load_hf_bdd100k(
     """
     try:
         from datasets import load_dataset  # noqa: WPS433
-    except ImportError:
+    except ImportError as e:
         raise SystemExit(
-            "huggingface datasets not installed. Run: pip install datasets pillow"
+            "Could not import 'datasets': %s\n"
+            "Make sure you are in the vcm env: conda activate vcm\n"
+            "Then: pip install datasets pillow" % e
         )
 
     print("Loading %s (split=%s, max_samples=%s) from HuggingFace ..." % (

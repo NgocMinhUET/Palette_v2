@@ -160,7 +160,10 @@ def _sample_network(rng):
 # ---------------------------------------------------------------------------
 
 def run_hf_bdd100k(args, csv_writer, rng):
-    from vcm.datasets.hf_bdd100k_loader import load_hf_bdd100k  # noqa: WPS433
+    try:
+        from vcm.datasets.hf_bdd100k_loader import load_hf_bdd100k  # noqa: WPS433
+    except Exception as e:
+        raise SystemExit("Import error in hf_bdd100k_loader: %s: %s" % (type(e).__name__, e))
 
     debug_path = os.path.join(_REPO, "results", "vcm_logs", "hf_bdd100k_debug.json")
     image_dir = os.path.join(_REPO, "data", "bdd100k_hf", "images")
