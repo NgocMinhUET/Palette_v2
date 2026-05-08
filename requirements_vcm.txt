@@ -1,3 +1,4 @@
-# CL-ROI-VCM optional extras (install from repo root: pip install -r requirements_vcm.txt)
+# CL-ROI-VCM optional extras — install via: pip install -r requirements_vcm.txt
+# (already included in environment.yml; only needed if you install manually)
 -r requirements.txt
 scikit-learn>=0.24.2

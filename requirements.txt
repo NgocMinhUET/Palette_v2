@@ -1,5 +1,6 @@
-numpy~=1.19.2
-tensorflow~=1.15.0
-tflearn~=0.3.2
-multiprocess~=0.70.12.2
-matplotlib~=3.4.2
+numpy>=1.19.2,<1.24
+tensorflow==1.15.4
+tflearn==0.3.2
+multiprocess>=0.70.12
+matplotlib>=3.3.0
+setuptools
