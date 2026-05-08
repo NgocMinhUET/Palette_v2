@@ -141,7 +141,7 @@ def _yolo_on_pil(pil_img, model, conf, iou, imgsz):
 
 def _map_for_image(pred, gt_boxes, gt_classes):
     """Compute mAP@[0.5:0.95] for a single image using compute_map module."""
-    from vcm.profile.compute_map import per_frame_map  # noqa: WPS433
+    from vcm.profile.compute_map import per_frame_map  # noqa: WPS433  # vcm.profile, not vcm.data_backends
     gt_det = {"frame_id": 0, "boxes": gt_boxes, "scores": [1.0] * len(gt_boxes), "classes": gt_classes}
     pred_det = {"frame_id": 0, "boxes": pred["boxes"], "scores": pred["scores"], "classes": pred["classes"]}
     vals = per_frame_map([pred_det], [gt_det])
@@ -161,7 +161,7 @@ def _sample_network(rng):
 
 def run_hf_bdd100k(args, csv_writer, rng):
     try:
-        from vcm.datasets.hf_bdd100k_loader import load_hf_bdd100k  # noqa: WPS433
+        from vcm.data_backends.hf_bdd100k_loader import load_hf_bdd100k  # noqa: WPS433
     except Exception as e:
         raise SystemExit("Import error in hf_bdd100k_loader: %s: %s" % (type(e).__name__, e))
 
