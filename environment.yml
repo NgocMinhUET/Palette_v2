@@ -1,12 +1,12 @@
 name: vcm
 channels:
-  - defaults
   - conda-forge
+  - defaults
 dependencies:
-  - python=3.8
+  - python=3.7
   - pip
   - pip:
-      - tensorflow==1.15.4
+      - tensorflow==1.15.0
       - tflearn==0.3.2
       - numpy>=1.19.2,<1.24
       - multiprocess>=0.70.12
