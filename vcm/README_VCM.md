@@ -95,9 +95,65 @@ Prints `task_per_bitrate = avg_u_task_gt / avg_bitrate` among other aggregates.
 
 ## Next steps with a real dataset
 
-1. Replace **`dummy_vcm_profile.csv`** with rows from real encoded streams + detector/tracker (**`roi_task_extractor.summarize_from_boxes`**).
-2. Define **`u_task_gt`** offline (e.g., mAP, IDF1, mIoU — task-dependent).
-3. Train **`TaskUtilityEstimator.fit_from_csv`** on that profile; keep **online RL reward tied to `u_task_hat`**.
+### Option A — Hugging Face BDD100K (image/keyframe, fastest start)
+
+Install:
+
+```bash
+pip install datasets pillow
+```
+
+Run:
+
+```bash
+python vcm/build_real_offline_profile.py \
+  --dataset_backend hf_bdd100k \
+  --hf_dataset_name dgural/bdd100k \
+  --max_samples 1000 \
+  --output_csv data/offline_profiles/bdd100k_hf_detection_profile.csv
+```
+
+Then re-train:
+
+```bash
+python vcm/train_vcm.py \
+  --profile_csv data/offline_profiles/bdd100k_hf_detection_profile.csv \
+  --fit_estimator --episodes 800 --num_agents 1
+```
+
+> **Limitation**: The `hf_bdd100k` backend uses **image/keyframe detection data only**.
+> Temporal tracking and motion estimation require full video sequences.
+> The `motion` field is set to **0.0** in this backend.
+> Use the `video_clips` backend (`python -m vcm.profile.build_real_profile`) for
+> full temporal information.
+>
+> Codec simulation uses **JPEG compression** as a proxy for HEVC QP. This preserves
+> the monotonic degradation of `u_task_gt` with QP but is not bit-exact HEVC.
+> Use `encode_hm.py` (video_clips backend) for paper-grade per-CTU RDO.
+
+### Option B — Local video clips (full video, paper-grade)
+
+```bash
+export BDD_VIDEOS_DIR=/path/to/bdd_clips
+python -m vcm.profile.build_real_profile \
+  --encoder x265 --limit_clips 20 --max_seconds 5 \
+  --out_csv data/offline_profiles/real_bdd_profile.csv
+```
+
+See `vcm/profile/README_profile.md` for full HM integration details.
+
+### Option C — Kaggle BDD100K (stub, not yet implemented)
+
+Use `--dataset_backend kaggle_bdd100k` (placeholder only).
+
+---
+
+## Debug
+
+If the HF dataset field layout is unknown, the first 3 raw samples are saved to
+`results/vcm_logs/hf_bdd100k_debug.json` automatically. Check `sample.keys()` in
+that file and update `convert_hf_bdd_sample_to_standard()` in
+`vcm/datasets/hf_bdd100k_loader.py` if needed.
 
 ---
 
