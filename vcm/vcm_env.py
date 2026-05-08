@@ -1,0 +1,220 @@
+# coding=utf-8
+"""
+Trace-driven VCM simulator: offline profile lookup + optional bandwidth traces.
+
+This is not a full WebRTC reproduction of Palette. It reuses the A3C training loop idea with
+VCM-oriented observations; online reward uses u_task_hat only (mAP / u_task_gt stay offline).
+"""
+
+import csv
+import os
+
+import numpy as np
+
+import vcm_config as cfg
+from task_utility_estimator import TaskUtilityEstimator
+
+
+class Environment(object):
+    """
+    Steps through synthetic/offline CSV profiles and optionally overlays trace bandwidth.
+    """
+
+    FRAMES_PER_VIDEO = 600
+
+    def __init__(
+        self,
+        all_cooked_time,
+        all_cooked_bw,
+        all_file_names,
+        random_seed=0,
+        profile_csv=None,
+        utility_estimator=None,
+    ):
+        self.all_cooked_time = all_cooked_time or []
+        self.all_cooked_bw = all_cooked_bw or []
+        self.all_file_names = all_file_names or []
+        self.random_seed = random_seed
+        self.rng = np.random.RandomState(random_seed)
+
+        if profile_csv is None:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            profile_csv = os.path.join(root, "data", "offline_profiles", "dummy_vcm_profile.csv")
+        self.profile_csv = os.path.abspath(profile_csv)
+
+        self._lookup = {}
+        self._video_ids = []
+        self._load_profile()
+
+        self.trace_pkt_idx = 0
+        if len(self.all_cooked_bw) > 0:
+            self._episode_trace_snippet = int(self.rng.randint(0, len(self.all_cooked_bw)))
+        else:
+            self._episode_trace_snippet = 0
+
+        self.util_est = utility_estimator if utility_estimator is not None else TaskUtilityEstimator()
+
+        self.video_ix = 0
+        self.frame_ix = 0
+
+    def _load_profile(self):
+        self._lookup.clear()
+        self._video_ids = []
+        with open(self.profile_csv, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                vid = int(row["video_id"])
+                fid = int(row["frame_id"])
+                qb = int(row["qp_base"])
+                dr = int(row["delta_qp_roi"])
+                key = (vid, fid, qb, dr)
+                self._lookup[key] = row
+                if vid not in self._video_ids:
+                    self._video_ids.append(vid)
+        self._video_ids = sorted(self._video_ids)
+        if not self._video_ids:
+            raise ValueError("Empty profile CSV: %s" % self.profile_csv)
+
+    def _current_vid_fid(self):
+        vid = self._video_ids[self.video_ix % len(self._video_ids)]
+        fid = self.frame_ix
+        return vid, fid
+
+    def _trace_bw_at_cursor(self):
+        """Current trace bandwidth without consuming the cursor (peek-friendly)."""
+        if not self.all_cooked_bw:
+            return None
+        snippet = self.all_cooked_bw[self._episode_trace_snippet % len(self.all_cooked_bw)]
+        if not snippet:
+            return None
+        idx = self.trace_pkt_idx % len(snippet)
+        return float(snippet[idx])
+
+    def _advance_trace_cursor(self):
+        self.trace_pkt_idx += 1
+
+    def _row_to_obs(self, row, bandwidth_mbps_effective):
+        rtt_ms = float(row["rtt_ms"])
+        loss_csv = float(row["loss"])
+        bitrate_mbps = float(row["bitrate_mbps"])
+        qp_base = int(row["qp_base"])
+        delta_qp_roi = int(row["delta_qp_roi"])
+        roi_area = float(row["roi_area"])
+        obj_count = int(row["obj_count"])
+        mean_conf = float(row["mean_conf"])
+        motion = float(row["motion"])
+        u_task_gt = float(row["u_task_gt"])
+
+        bw = float(bandwidth_mbps_effective)
+        delay_ms = rtt_ms + max(0.0, bitrate_mbps - bw) * 100.0
+        overshoot = max(0.0, bitrate_mbps - bw) / max(cfg.MAX_BANDWIDTH_MBPS, 1e-6)
+        loss_eff = float(np.clip(loss_csv + 0.08 * overshoot, 0.0, 1.0))
+
+        feat = {
+            "roi_area": roi_area,
+            "obj_count": obj_count,
+            "mean_conf": mean_conf,
+            "motion": motion,
+            "qp_base": qp_base,
+            "delta_qp_roi": delta_qp_roi,
+            "bitrate_mbps": bitrate_mbps,
+            "rtt_ms": rtt_ms,
+            "loss": loss_eff,
+        }
+        u_task_hat = self.util_est.predict(feat)
+
+        return {
+            "bandwidth_mbps": bw,
+            "rtt_ms": rtt_ms,
+            "loss": loss_eff,
+            "bitrate_mbps": bitrate_mbps,
+            "delay_ms": delay_ms,
+            "qp_base": qp_base,
+            "delta_qp_roi": delta_qp_roi,
+            "roi_area": roi_area,
+            "obj_count": obj_count,
+            "mean_conf": mean_conf,
+            "motion": motion,
+            "u_task_hat": u_task_hat,
+            "u_task_gt": u_task_gt,
+            "end_of_video": False,
+        }
+
+    def _advance_indices(self):
+        """Advance frame/video pointers after one step. Set end_of_video on video boundary."""
+        end_of_video = False
+        self.frame_ix += 1
+        if self.frame_ix >= self.FRAMES_PER_VIDEO:
+            end_of_video = True
+            self.frame_ix = 0
+            self.video_ix += 1
+            if len(self.all_cooked_bw) > 0:
+                self._episode_trace_snippet = int(self.rng.randint(0, len(self.all_cooked_bw)))
+            self.trace_pkt_idx = self.rng.randint(0, 1000)
+        return end_of_video
+
+    def get_video_chunk(self, qp_base, delta_qp_roi):
+        vid, fid = self._current_vid_fid()
+        key = (vid, fid, int(qp_base), int(delta_qp_roi))
+        if key not in self._lookup:
+            raise KeyError("Missing profile row for %s" % (key,))
+
+        row = self._lookup[key]
+        bw_trace = self._trace_bw_at_cursor()
+        if bw_trace is not None:
+            bandwidth_mbps = bw_trace
+            self._advance_trace_cursor()
+        else:
+            bandwidth_mbps = float(row["bandwidth_mbps"])
+
+        obs = self._row_to_obs(row, bandwidth_mbps)
+        obs["end_of_video"] = self._advance_indices()
+        return obs
+
+    def peek_action_observations(self):
+        """
+        For oracle / debugging: all action outcomes at the current (video, frame) without advancing.
+        Each dict includes u_task_gt and estimated rewards components.
+        """
+        vid, fid = self._current_vid_fid()
+        out = []
+        bw_trace = self._trace_bw_at_cursor()
+        for aid in range(cfg.A_DIM):
+            qb, dr = cfg.decode_action(aid)
+            key = (vid, fid, int(qb), int(dr))
+            if key not in self._lookup:
+                raise KeyError("peek missing profile row for %s" % (key,))
+            row = self._lookup[key]
+            if bw_trace is not None:
+                bw_use = bw_trace
+            else:
+                bw_use = float(row["bandwidth_mbps"])
+            out.append(self._row_to_obs(row, bw_use))
+        return out
+
+    def reset_episode(self):
+        """Resample trace snippet; optional call between test episodes."""
+        self.video_ix = 0
+        self.frame_ix = 0
+        if len(self.all_cooked_bw) > 0:
+            self._episode_trace_snippet = int(self.rng.randint(0, len(self.all_cooked_bw)))
+            self.trace_pkt_idx = int(self.rng.randint(0, 5000))
+        else:
+            self.trace_pkt_idx = 0
+
+
+def get_state_vector(obs, prev_obs=None):
+    """Normalized 9-D state vector for one timestep (Palette-style history assembled in trainer)."""
+    del prev_obs  # Reserved for temporal deltas / richer task features.
+    bw = float(obs["bandwidth_mbps"]) / cfg.MAX_BANDWIDTH_MBPS
+    rt = float(obs["rtt_ms"]) / cfg.MAX_RTT_MS
+    ls = float(np.clip(obs["loss"], 0.0, 1.0))
+    denom_qp = max(float(cfg.QP_MAX - cfg.QP_MIN), 1e-6)
+    qp_n = (float(obs["qp_base"]) - float(cfg.QP_MIN)) / denom_qp
+    br_n = float(obs["bitrate_mbps"]) / cfg.MAX_BITRATE_MBPS
+    roi = float(np.clip(obs["roi_area"], 0.0, 1.0))
+    oc = float(obs["obj_count"]) / cfg.MAX_OBJ_COUNT
+    mc = float(np.clip(obs["mean_conf"], 0.0, 1.0))
+    mo = float(obs["motion"]) / max(float(cfg.MAX_MOTION), 1e-6)
+    vec = np.array([bw, rt, ls, qp_n, br_n, roi, oc, mc, mo], dtype=np.float32)
+    return vec

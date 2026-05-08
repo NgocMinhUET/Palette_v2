@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+
+# Generated CL-ROI-VCM artifacts (regenerate via vcm/build_dummy_offline_profile.py)
+data/offline_profiles/dummy_vcm_profile.csv
+
+results/vcm_logs/*
+!results/vcm_logs/.gitkeep
+
+results/vcm_models/*
+!results/vcm_models/.gitkeep
