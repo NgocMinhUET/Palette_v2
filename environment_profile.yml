@@ -1,0 +1,17 @@
+name: vcm-profile
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - conda-forge::ffmpeg
+  - conda-forge::x265
+  - pip:
+      - ultralytics>=8.0
+      - datasets>=2.0
+      - pillow
+      - numpy
+      - scikit-learn>=0.24
+      - torch
+      - torchvision
