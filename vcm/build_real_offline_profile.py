@@ -40,6 +40,16 @@ sys.path.insert(0, _VCM)
 import vcm_config as cfg  # noqa: E402
 from roi_task_extractor import summarize_from_boxes  # noqa: E402
 
+# Import ultralytics at module level — lazy import inside functions can fail
+# when sys.modules state is modified by earlier imports.
+try:
+    from ultralytics import YOLO as _YOLO_CLS
+    _ULTRALYTICS_OK = True
+except ImportError as _ul_err:
+    _YOLO_CLS = None
+    _ULTRALYTICS_OK = False
+    print("WARNING: ultralytics not importable: %s" % _ul_err)
+
 
 CSV_FIELDS = [
     "video_id",
@@ -177,8 +187,9 @@ def run_hf_bdd100k(args, csv_writer, rng):
     )
 
     print("Loading YOLO weights: %s" % args.yolo_weights)
-    from ultralytics import YOLO  # noqa: WPS433
-    model = YOLO(args.yolo_weights)
+    if not _ULTRALYTICS_OK:
+        raise SystemExit("ultralytics is not importable. Run: pip install ultralytics")
+    model = _YOLO_CLS(args.yolo_weights)
 
     total_rows = 0
     t_start = time.time()
