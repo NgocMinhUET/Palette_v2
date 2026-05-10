@@ -32,16 +32,7 @@ import time
 
 import numpy as np
 
-_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_VCM = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _REPO)
-sys.path.insert(0, _VCM)
-
-import vcm_config as cfg  # noqa: E402
-from roi_task_extractor import summarize_from_boxes  # noqa: E402
-
-# Import ultralytics at module level — lazy import inside functions can fail
-# when sys.modules state is modified by earlier imports.
+# Import ultralytics BEFORE any sys.path manipulation to avoid submodule resolution conflicts.
 try:
     from ultralytics import YOLO as _YOLO_CLS
     _ULTRALYTICS_OK = True
@@ -49,6 +40,14 @@ except ImportError as _ul_err:
     _YOLO_CLS = None
     _ULTRALYTICS_OK = False
     print("WARNING: ultralytics not importable: %s" % _ul_err)
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_VCM = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _REPO)
+sys.path.insert(0, _VCM)
+
+import vcm_config as cfg  # noqa: E402
+from roi_task_extractor import summarize_from_boxes  # noqa: E402
 
 
 CSV_FIELDS = [
