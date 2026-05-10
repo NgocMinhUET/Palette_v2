@@ -43,11 +43,13 @@ except ImportError as _ul_err:
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _VCM = os.path.dirname(os.path.abspath(__file__))
+# Only insert _REPO so vcm.* package imports resolve; do NOT insert _VCM as
+# that causes Python's module resolver to shadow ultralytics submodules with
+# files from the vcm/ directory when ultralytics' lazy loader is active.
 sys.path.insert(0, _REPO)
-sys.path.insert(0, _VCM)
 
-import vcm_config as cfg  # noqa: E402
-from roi_task_extractor import summarize_from_boxes  # noqa: E402
+from vcm import vcm_config as cfg  # noqa: E402
+from vcm.roi_task_extractor import summarize_from_boxes  # noqa: E402
 
 
 CSV_FIELDS = [
