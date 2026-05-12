@@ -73,21 +73,50 @@ def _save_padded_png(pil_img, path):
     return w2, h2
 
 
+def _run_quiet(cmd):
+    """Run subprocess; on failure, raise with captured stderr for diagnostics."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    _, err = proc.communicate()
+    if proc.returncode != 0:
+        err_txt = (err or b"").decode("utf-8", errors="ignore").strip()
+        raise subprocess.CalledProcessError(
+            proc.returncode, cmd,
+            output=err_txt[:2000] if err_txt else None,
+        )
+
+
 def _encode_intra_one(in_png, qp, workdir):
-    """Encode a single PNG as a one-frame HEVC intra bitstream; return bytes + decoded path."""
+    """Encode a single PNG as a one-frame HEVC intra bitstream; return bytes + decoded path.
+
+    For small inputs we drop ctu-size and min-cu-size so libx265 accepts patches
+    down to 32x32. Inputs smaller than that should be rejected by the caller.
+    """
     out_265 = os.path.join(workdir, "stream.265")
     out_png = os.path.join(workdir, "decoded.png")
+
+    pil = Image.open(in_png)
+    w, h = pil.size
+    min_side = min(w, h)
+    if min_side < 64:
+        ctu = 32 if min_side >= 32 else 16
+        x265_params = (
+            "qp=%d:keyint=1:tune=zerolatency:log-level=0:ctu=%d:min-cu-size=8"
+            % (int(qp), ctu)
+        )
+    else:
+        x265_params = "qp=%d:keyint=1:tune=zerolatency:log-level=0" % int(qp)
+
     cmd = [
         _FFMPEG_BIN, "-y", "-hide_banner", "-loglevel", "error",
         "-i", in_png,
         "-c:v", "libx265",
-        "-x265-params", "qp=%d:keyint=1:tune=zerolatency:log-level=0" % int(qp),
+        "-x265-params", x265_params,
         "-pix_fmt", "yuv420p",
         "-frames:v", "1",
         "-f", "hevc",
         out_265,
     ]
-    subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    _run_quiet(cmd)
     total_bytes = os.path.getsize(out_265)
 
     cmd_dec = [
@@ -96,7 +125,7 @@ def _encode_intra_one(in_png, qp, workdir):
         "-frames:v", "1",
         out_png,
     ]
-    subprocess.check_call(cmd_dec, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    _run_quiet(cmd_dec)
     return total_bytes, out_png
 
 
@@ -142,6 +171,7 @@ def encode_image_x265(pil_img, qp_base, delta_qp_roi, boxes=None):
         bg_decoded = Image.open(bg_decoded_path).convert("RGB")
 
         n_patches = 0
+        n_skipped = 0
         total_bytes = bg_bytes
         if delta_qp_roi < 0 and boxes:
             composed = bg_decoded.copy()
@@ -154,7 +184,10 @@ def encode_image_x265(pil_img, qp_base, delta_qp_roi, boxes=None):
                     continue
                 x1, y1 = _ensure_even(x1), _ensure_even(y1)
                 x2, y2 = _ensure_even(x2), _ensure_even(y2)
-                if x2 - x1 < 8 or y2 - y1 < 8:
+                pw, ph = x2 - x1, y2 - y1
+                # libx265 (with ctu=16/min-cu=8) needs at least 16x16.
+                if pw < 16 or ph < 16:
+                    n_skipped += 1
                     continue
 
                 patch_pil = pil_rgb_even.crop((x1, y1, x2, y2))
@@ -162,9 +195,15 @@ def encode_image_x265(pil_img, qp_base, delta_qp_roi, boxes=None):
                 os.makedirs(patch_dir, exist_ok=True)
                 patch_in_png = os.path.join(patch_dir, "p.png")
                 patch_pil.save(patch_in_png, format="PNG")
-                patch_bytes, patch_decoded_path = _encode_intra_one(
-                    patch_in_png, qp_roi, patch_dir
-                )
+                try:
+                    patch_bytes, patch_decoded_path = _encode_intra_one(
+                        patch_in_png, qp_roi, patch_dir
+                    )
+                except subprocess.CalledProcessError:
+                    # libx265 still rejected this odd-sized patch; skip it but
+                    # keep the rest of the frame. Background is preserved.
+                    n_skipped += 1
+                    continue
                 patch_decoded = Image.open(patch_decoded_path).convert("RGB")
                 composed.paste(patch_decoded, (x1, y1))
                 total_bytes += patch_bytes
@@ -175,6 +214,7 @@ def encode_image_x265(pil_img, qp_base, delta_qp_roi, boxes=None):
                 "effective_qp_bg": qp_bg,
                 "effective_qp_roi": qp_roi,
                 "n_roi_patches": n_patches,
+                "n_roi_skipped": n_skipped,
             }
 
         return {
