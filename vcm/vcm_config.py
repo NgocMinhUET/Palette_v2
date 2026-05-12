@@ -14,15 +14,19 @@ ROI_QP_OFFSET_SET = [-6, -3, 0, 3]
 A_DIM = len(QP_BASE_SET) * len(ROI_QP_OFFSET_SET)
 
 # Reward weights (training uses u_task_hat only; u_task_gt is offline/oracle)
+# NOTE: GAMMA_DELAY is kept small because the HF-BDD image-level JPEG proxy
+# produces bitrates 10-15 Mbps, far exceeding the synthetic bandwidth (1.5-9.5 Mbps),
+# causing delay_ms ~700-900 ms. Using 0.001 keeps the delay term comparable in
+# magnitude to the task utility term (both ~0.5-1.0 scale).
 ALPHA_TASK = 1.0
-BETA_BITRATE = 0.05
-GAMMA_DELAY = 0.01
+BETA_BITRATE = 0.01
+GAMMA_DELAY = 0.001
 DELTA_LOSS = 0.0
 
-MAX_BANDWIDTH_MBPS = 10.0
-MAX_RTT_MS = 500.0
-MAX_BITRATE_MBPS = 10.0
-MAX_OBJ_COUNT = 20.0
+MAX_BANDWIDTH_MBPS = 15.0
+MAX_RTT_MS = 1000.0
+MAX_BITRATE_MBPS = 15.0
+MAX_OBJ_COUNT = 40.0
 MAX_MOTION = 100.0
 
 QP_MIN = min(QP_BASE_SET)
