@@ -239,34 +239,58 @@ def parse_args():
     )
     ap.add_argument("--trace_dir", type=str, default="traces")
     ap.add_argument("--log_dir", type=str, default="results/vcm_logs")
-    ap.add_argument("--policy", type=str, default="uniform_qp")
+    ap.add_argument(
+        "--policy",
+        type=str,
+        default="all",
+        help="One of: rl, oracle, uniform_qp, fixed_roi, random, all (default: all)",
+    )
     ap.add_argument("--max_steps", type=int, default=4000)
     ap.add_argument("--seed", type=int, default=0)
     return ap.parse_args()
 
 
+_ALL_POLICIES = ["uniform_qp", "fixed_roi", "random", "oracle", "rl"]
+
+
 def main():
     args = parse_args()
-    if args.policy == "rl":
-        try:
-            resolved = _resolve_rl_checkpoint_prefix(args.model_path, args.model_dir, args.model_ep)
-        except FileNotFoundError as e:
-            print(str(e))
-            sys.exit(1)
-        if not resolved:
-            print("When --policy rl, pass --model_path or --model_dir (with saved nn_model_ep_*.ckpt)")
-            sys.exit(1)
-        args.model_path = resolved
     profile_csv = _resolve_repo_path(args.profile_csv)
     trace_dir = _resolve_repo_path(args.trace_dir)
     log_dir = _resolve_repo_path(args.log_dir)
-
     np.random.seed(args.seed)
 
-    print("Running policy=%s ..." % args.policy)
-    row = run_policy(args, profile_csv, trace_dir)
-    append_results_csv(log_dir, row)
-    print(row)
+    policies_to_run = _ALL_POLICIES if args.policy == "all" else [args.policy]
+
+    # Pre-resolve RL checkpoint once if needed
+    rl_checkpoint = ""
+    if "rl" in policies_to_run:
+        try:
+            rl_checkpoint = _resolve_rl_checkpoint_prefix(
+                args.model_path, args.model_dir, args.model_ep
+            )
+        except FileNotFoundError as e:
+            print("[WARN] Skipping rl policy: %s" % str(e))
+            policies_to_run = [p for p in policies_to_run if p != "rl"]
+        if not rl_checkpoint and "rl" in policies_to_run:
+            print("[WARN] Skipping rl policy: pass --model_path or --model_dir")
+            policies_to_run = [p for p in policies_to_run if p != "rl"]
+
+    # Remove stale CSV so we start fresh when running all policies
+    if args.policy == "all":
+        stale = os.path.join(log_dir, "test_results.csv")
+        if os.path.isfile(stale):
+            os.remove(stale)
+            print("Removed stale %s" % stale)
+
+    for policy in policies_to_run:
+        args.policy = policy
+        if policy == "rl":
+            args.model_path = rl_checkpoint
+        print("Running policy=%s ..." % policy)
+        row = run_policy(args, profile_csv, trace_dir)
+        append_results_csv(log_dir, row)
+        print(row)
 
 
 if __name__ == "__main__":
