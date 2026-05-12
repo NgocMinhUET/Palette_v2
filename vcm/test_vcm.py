@@ -39,6 +39,14 @@ def _resolve_repo_path(p):
     return os.path.normpath(os.path.join(_REPO_ROOT, p))
 
 
+def _resolve_trace_dir(p):
+    """Ensure trailing separator — load_trace.py uses string concatenation, not os.path.join."""
+    resolved = _resolve_repo_path(p)
+    if not resolved.endswith(os.sep):
+        resolved = resolved + os.sep
+    return resolved
+
+
 def _resolve_rl_checkpoint_prefix(model_path, model_dir, model_ep):
     """Return TF saver checkpoint prefix (path ending in .ckpt, no .meta)."""
     mp = (model_path or "").strip()
@@ -267,7 +275,7 @@ _ALL_POLICIES = ["uniform_qp", "fixed_roi", "random", "oracle", "rl"]
 def main():
     args = parse_args()
     profile_csv = _resolve_repo_path(args.profile_csv)
-    trace_dir = _resolve_repo_path(args.trace_dir)
+    trace_dir = _resolve_trace_dir(args.trace_dir)
     log_dir = _resolve_repo_path(args.log_dir)
     np.random.seed(args.seed)
 

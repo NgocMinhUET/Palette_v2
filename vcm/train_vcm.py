@@ -58,6 +58,18 @@ def _resolve_repo_path(p):
     return os.path.normpath(os.path.join(_REPO_ROOT, p))
 
 
+def _resolve_trace_dir(p):
+    """Resolve trace dir and guarantee trailing separator.
+
+    load_trace.load_trace() uses plain string concatenation
+    (cooked_trace_folder + filename), so the path MUST end with os.sep.
+    """
+    resolved = _resolve_repo_path(p)
+    if not resolved.endswith(os.sep):
+        resolved = resolved + os.sep
+    return resolved
+
+
 def central_agent(net_params_queues, exp_queues, agent_processes, episodes_target, model_dir, log_dir):
     assert len(net_params_queues) == len(exp_queues)
     num_agents = len(net_params_queues)
@@ -357,7 +369,10 @@ def train_multi(args, profile_csv, trace_dir, model_dir, log_dir):
         net_params_queues.append(mp.Queue(1))
         exp_queues.append(mp.Queue(1))
 
-    all_cooked_time, all_cooked_bw, all_file_names = load_trace.load_trace(trace_dir)
+    try:
+        all_cooked_time, all_cooked_bw, all_file_names = load_trace.load_trace(trace_dir)
+    except Exception:
+        all_cooked_time, all_cooked_bw, all_file_names = [], [], []
 
     agent_processes = []
     for i in range(args.num_agents):
@@ -621,7 +636,7 @@ def parse_args():
 def main():
     args = parse_args()
     profile_csv = _resolve_repo_path(args.profile_csv)
-    trace_dir = _resolve_repo_path(args.trace_dir)
+    trace_dir = _resolve_trace_dir(args.trace_dir)
     model_dir = _resolve_repo_path(args.model_dir)
     log_dir = _resolve_repo_path(args.log_dir)
 
