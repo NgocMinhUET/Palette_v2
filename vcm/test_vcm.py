@@ -9,8 +9,10 @@ from __future__ import print_function
 
 import argparse
 import csv
+import glob
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -35,6 +37,43 @@ def _resolve_repo_path(p):
     if os.path.isabs(p):
         return p
     return os.path.normpath(os.path.join(_REPO_ROOT, p))
+
+
+def _resolve_rl_checkpoint_prefix(model_path, model_dir, model_ep):
+    """Return TF saver checkpoint prefix (path ending in .ckpt, no .meta)."""
+    mp = (model_path or "").strip()
+    if mp:
+        return _resolve_repo_path(mp)
+    md = (model_dir or "").strip()
+    if not md:
+        return ""
+    d = _resolve_repo_path(md)
+    if model_ep is not None:
+        cand = os.path.join(d, "nn_model_ep_%d.ckpt" % int(model_ep))
+        if not os.path.isfile(cand + ".meta"):
+            raise FileNotFoundError(
+                "No checkpoint at %s (.meta missing); check --model_ep / --model_dir" % cand
+            )
+        return cand
+    metas = glob.glob(os.path.join(d, "nn_model_ep_*.ckpt.meta"))
+    if not metas:
+        raise FileNotFoundError(
+            "No nn_model_ep_*.ckpt under %s; pass --model_path explicitly" % d
+        )
+    best_prefix = None
+    best_ep = -1
+    for meta in metas:
+        base = os.path.basename(meta)
+        m = re.match(r"nn_model_ep_(\d+)\.ckpt\.meta$", base)
+        if not m:
+            continue
+        ep = int(m.group(1))
+        if ep > best_ep:
+            best_ep = ep
+            best_prefix = meta[: -len(".meta")]
+    if best_prefix is None:
+        raise FileNotFoundError("Could not parse nn_model_ep_* checkpoints in %s" % d)
+    return best_prefix
 
 
 def _fixed_action_id(qp_base, delta_roi):
@@ -175,7 +214,24 @@ def append_results_csv(log_dir, row):
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Test CL-ROI-VCM policies")
-    ap.add_argument("--model_path", type=str, default="", help="TensorFlow checkpoint prefix for rl policy")
+    ap.add_argument(
+        "--model_path",
+        type=str,
+        default="",
+        help="TensorFlow checkpoint prefix for rl (e.g. results/vcm_models/nn_model_ep_400.ckpt)",
+    )
+    ap.add_argument(
+        "--model_dir",
+        type=str,
+        default="",
+        help="Directory containing nn_model_ep_*.ckpt; uses latest episode if --model_path omitted",
+    )
+    ap.add_argument(
+        "--model_ep",
+        type=int,
+        default=None,
+        help="With --model_dir, load nn_model_ep_{ep}.ckpt instead of latest",
+    )
     ap.add_argument(
         "--profile_csv",
         type=str,
@@ -191,9 +247,16 @@ def parse_args():
 
 def main():
     args = parse_args()
-    if args.policy == "rl" and not args.model_path:
-        print("--model_path is required when --policy rl")
-        sys.exit(1)
+    if args.policy == "rl":
+        try:
+            resolved = _resolve_rl_checkpoint_prefix(args.model_path, args.model_dir, args.model_ep)
+        except FileNotFoundError as e:
+            print(str(e))
+            sys.exit(1)
+        if not resolved:
+            print("When --policy rl, pass --model_path or --model_dir (with saved nn_model_ep_*.ckpt)")
+            sys.exit(1)
+        args.model_path = resolved
     profile_csv = _resolve_repo_path(args.profile_csv)
     trace_dir = _resolve_repo_path(args.trace_dir)
     log_dir = _resolve_repo_path(args.log_dir)
