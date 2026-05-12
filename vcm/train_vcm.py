@@ -46,6 +46,11 @@ RAND_RANGE = 10000
 DEFAULT_ACTION = cfg.A_DIM // 2
 NN_MODEL = None
 
+# Mutable globals set from CLI before constructing ActorNetwork.
+ENTROPY_WEIGHT = agent.ENTROPY_WEIGHT
+ENTROPY_FLOOR = agent.ENTROPY_WEIGHT_FLOOR
+ENTROPY_DECAY = agent.ENTROPY_WEIGHT_DECAY
+
 
 def _resolve_repo_path(p):
     if os.path.isabs(p):
@@ -61,7 +66,15 @@ def central_agent(net_params_queues, exp_queues, agent_processes, episodes_targe
     logging.basicConfig(filename=log_base + "_central", filemode="a", level=logging.INFO)
 
     with tf.Session(config=config) as sess:
-        actor = agent.ActorNetwork(sess, state_dim=[S_INFO, S_LEN], action_dim=A_DIM, learning_rate=ACTOR_LR_RATE)
+        actor = agent.ActorNetwork(
+            sess,
+            state_dim=[S_INFO, S_LEN],
+            action_dim=A_DIM,
+            learning_rate=ACTOR_LR_RATE,
+            entropy_weight=ENTROPY_WEIGHT,
+            entropy_floor=ENTROPY_FLOOR,
+            entropy_decay=ENTROPY_DECAY,
+        )
         critic = agent.CriticNetwork(sess, state_dim=[S_INFO, S_LEN], learning_rate=CRITIC_LR_RATE)
 
         summary_ops, summary_vars = agent.build_summaries()
@@ -155,6 +168,8 @@ def central_agent(net_params_queues, exp_queues, agent_processes, episodes_targe
             writer.add_summary(summary_str, episode)
             writer.flush()
 
+            actor.set_entropy_weight()
+
             if episode % MODEL_SAVE_INTERVAL == 0:
                 os.makedirs(model_dir, exist_ok=True)
                 save_path = saver.save(sess, os.path.join(model_dir, "nn_model_ep_%d.ckpt" % episode))
@@ -221,7 +236,15 @@ def work_agent(
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 
     with tf.Session(config=config_local) as sess:
-        actor = agent.ActorNetwork(sess, state_dim=[S_INFO, S_LEN], action_dim=A_DIM, learning_rate=ACTOR_LR_RATE)
+        actor = agent.ActorNetwork(
+            sess,
+            state_dim=[S_INFO, S_LEN],
+            action_dim=A_DIM,
+            learning_rate=ACTOR_LR_RATE,
+            entropy_weight=ENTROPY_WEIGHT,
+            entropy_floor=ENTROPY_FLOOR,
+            entropy_decay=ENTROPY_DECAY,
+        )
         critic = agent.CriticNetwork(sess, state_dim=[S_INFO, S_LEN], learning_rate=CRITIC_LR_RATE)
 
         sess.run(tf.global_variables_initializer())
@@ -415,7 +438,15 @@ def train_single(args, profile_csv, trace_dir, model_dir, log_dir):
     )
 
     with tf.Session(config=config) as sess:
-        actor = agent.ActorNetwork(sess, state_dim=[S_INFO, S_LEN], action_dim=A_DIM, learning_rate=ACTOR_LR_RATE)
+        actor = agent.ActorNetwork(
+            sess,
+            state_dim=[S_INFO, S_LEN],
+            action_dim=A_DIM,
+            learning_rate=ACTOR_LR_RATE,
+            entropy_weight=ENTROPY_WEIGHT,
+            entropy_floor=ENTROPY_FLOOR,
+            entropy_decay=ENTROPY_DECAY,
+        )
         critic = agent.CriticNetwork(sess, state_dim=[S_INFO, S_LEN], learning_rate=CRITIC_LR_RATE)
         summary_ops, summary_vars = agent.build_summaries()
         sess.run(tf.global_variables_initializer())
@@ -522,6 +553,8 @@ def train_single(args, profile_csv, trace_dir, model_dir, log_dir):
                     save_path = saver.save(sess, os.path.join(model_dir, "nn_model_ep_%d.ckpt" % train_round))
                     print("Saved", save_path)
 
+                actor.set_entropy_weight()
+
                 del s_batch[:]
                 del a_batch[:]
                 del r_batch[:]
@@ -564,6 +597,24 @@ def parse_args():
         action="store_true",
         help="Fit TaskUtilityEstimator from profile CSV when sklearn is installed",
     )
+    ap.add_argument(
+        "--entropy_weight",
+        type=float,
+        default=agent.ENTROPY_WEIGHT,
+        help="Initial entropy bonus weight (higher = more exploration, default 0.5)",
+    )
+    ap.add_argument(
+        "--entropy_floor",
+        type=float,
+        default=agent.ENTROPY_WEIGHT_FLOOR,
+        help="Lower bound entropy weight after decay (default 0.2)",
+    )
+    ap.add_argument(
+        "--entropy_decay",
+        type=float,
+        default=agent.ENTROPY_WEIGHT_DECAY,
+        help="Per-episode multiplicative decay of entropy weight (default 0.9998)",
+    )
     return ap.parse_args()
 
 
@@ -577,8 +628,15 @@ def main():
     os.makedirs(model_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
 
-    global RANDOM_SEED
+    global RANDOM_SEED, ENTROPY_WEIGHT, ENTROPY_FLOOR, ENTROPY_DECAY
     RANDOM_SEED = args.seed
+    ENTROPY_WEIGHT = float(args.entropy_weight)
+    ENTROPY_FLOOR = float(args.entropy_floor)
+    ENTROPY_DECAY = float(args.entropy_decay)
+    print(
+        "Entropy: weight=%.3f floor=%.3f decay=%.5f"
+        % (ENTROPY_WEIGHT, ENTROPY_FLOOR, ENTROPY_DECAY)
+    )
 
     if args.num_agents <= 1:
         train_single(args, profile_csv, trace_dir, model_dir, log_dir)

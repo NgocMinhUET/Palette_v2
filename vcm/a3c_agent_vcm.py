@@ -12,19 +12,34 @@ __all__ = [tf]
 import tflearn
 
 GAMMA = 0.9
-ENTROPY_WEIGHT = 0.15
+# Higher default entropy keeps the 20-action policy from collapsing to a single
+# action when reward variance across actions is small (e.g. real BDD profile).
+# Floor at 0.2 prevents premature determinism even after long training.
+ENTROPY_WEIGHT = 0.5
+ENTROPY_WEIGHT_FLOOR = 0.2
 ENTROPY_WEIGHT_DECAY = 0.9998
 ENTROPY_EPS = 1e-6
 leaky = 0.2
 
 
 class ActorNetwork(object):
-    def __init__(self, sess, state_dim, action_dim, learning_rate):
+    def __init__(
+        self,
+        sess,
+        state_dim,
+        action_dim,
+        learning_rate,
+        entropy_weight=ENTROPY_WEIGHT,
+        entropy_floor=ENTROPY_WEIGHT_FLOOR,
+        entropy_decay=ENTROPY_WEIGHT_DECAY,
+    ):
         self.sess = sess
         self.s_dim = state_dim
         self.a_dim = action_dim
         self.lr_rate = learning_rate
-        self.entropy_weight = ENTROPY_WEIGHT
+        self.entropy_weight = float(entropy_weight)
+        self.entropy_floor = float(entropy_floor)
+        self.entropy_decay = float(entropy_decay)
 
         self.inputs, self.out = self.create_actor_network()
 
@@ -41,12 +56,17 @@ class ActorNetwork(object):
 
         self.act_grad_weights = tf.placeholder(tf.float32, [None, 1])
 
+        # Entropy weight as a placeholder lets us anneal it dynamically (the
+        # original Palette code baked it as a Python constant, so the
+        # set_entropy_weight() call had no effect on the TF graph).
+        self.entropy_weight_ph = tf.placeholder(tf.float32, shape=())
+
         self.obj = tf.reduce_sum(
             tf.multiply(
                 tf.math.log(tf.reduce_sum(tf.multiply(self.out, self.acts), reduction_indices=1, keep_dims=True)),
                 -self.act_grad_weights,
             )
-        ) + self.entropy_weight * tf.reduce_sum(tf.multiply(self.out, tf.math.log(self.out + ENTROPY_EPS)))
+        ) + self.entropy_weight_ph * tf.reduce_sum(tf.multiply(self.out, tf.math.log(self.out + ENTROPY_EPS)))
 
         self.actor_gradients = tf.gradients(self.obj, self.network_params)
 
@@ -82,7 +102,12 @@ class ActorNetwork(object):
     def train(self, inputs, acts, act_grad_weights):
         self.sess.run(
             self.optimize,
-            feed_dict={self.inputs: inputs, self.acts: acts, self.act_grad_weights: act_grad_weights},
+            feed_dict={
+                self.inputs: inputs,
+                self.acts: acts,
+                self.act_grad_weights: act_grad_weights,
+                self.entropy_weight_ph: self.entropy_weight,
+            },
         )
 
     def predict(self, inputs):
@@ -91,7 +116,12 @@ class ActorNetwork(object):
     def get_gradients(self, inputs, acts, act_grad_weights):
         return self.sess.run(
             self.actor_gradients,
-            feed_dict={self.inputs: inputs, self.acts: acts, self.act_grad_weights: act_grad_weights},
+            feed_dict={
+                self.inputs: inputs,
+                self.acts: acts,
+                self.act_grad_weights: act_grad_weights,
+                self.entropy_weight_ph: self.entropy_weight,
+            },
         )
 
     def apply_gradients(self, actor_gradients):
@@ -110,9 +140,10 @@ class ActorNetwork(object):
         )
 
     def set_entropy_weight(self):
-        self.entropy_weight *= ENTROPY_WEIGHT_DECAY
-        if self.entropy_weight < 0.1:
-            self.entropy_weight = 0.1
+        """Decay entropy weight one step; clipped at the configured floor."""
+        self.entropy_weight *= self.entropy_decay
+        if self.entropy_weight < self.entropy_floor:
+            self.entropy_weight = self.entropy_floor
         return self.entropy_weight
 
 

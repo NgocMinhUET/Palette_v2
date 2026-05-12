@@ -95,7 +95,7 @@ Prints `task_per_bitrate = avg_u_task_gt / avg_bitrate` among other aggregates.
 
 ## Next steps with a real dataset
 
-### Option A — Hugging Face BDD100K (image/keyframe, fastest start)
+### Option A — Hugging Face BDD100K, JPEG proxy (fastest start)
 
 Install:
 
@@ -113,23 +113,54 @@ python vcm/build_real_offline_profile.py \
   --output_csv data/offline_profiles/bdd100k_hf_detection_profile.csv
 ```
 
-Then re-train:
+> Codec is **JPEG quality proxy** for HEVC QP. Fast (~minutes), good for smoke
+> tests. For paper-grade real HEVC, use Option A2 below.
+
+### Option A2 — HF BDD100K + **real libx265 HEVC intra** (paper-grade)
+
+Verify `ffmpeg -encoders | grep libx265` succeeds, then:
+
+```bash
+python vcm/build_real_offline_profile.py \
+  --dataset_backend hf_bdd100k_x265 \
+  --hf_dataset_name dgural/bdd100k \
+  --max_samples 500 \
+  --output_csv data/offline_profiles/bdd100k_x265_intra_profile.csv
+```
+
+Each image is encoded per-(qp_base, delta_qp_roi) as a single HEVC I-frame via
+`libx265`. ROI bias (when `delta_qp_roi < 0`) re-encodes object crops at the
+lower QP and pastes them over the background. Much slower than JPEG (~30 min for
+500 samples × 20 actions on CPU), but rate-distortion behavior is **real HEVC**.
+
+### Train on either profile
 
 ```bash
 python vcm/train_vcm.py \
-  --profile_csv data/offline_profiles/bdd100k_hf_detection_profile.csv \
-  --fit_estimator --episodes 800 --num_agents 1
+  --profile_csv data/offline_profiles/bdd100k_x265_intra_profile.csv \
+  --fit_estimator --episodes 1500 --num_agents 1 \
+  --entropy_weight 0.5 --entropy_floor 0.2 \
+  --log_dir results/vcm_logs_x265 --model_dir results/vcm_models_x265
 ```
 
-> **Limitation**: The `hf_bdd100k` backend uses **image/keyframe detection data only**.
-> Temporal tracking and motion estimation require full video sequences.
-> The `motion` field is set to **0.0** in this backend.
-> Use the `video_clips` backend (`python -m vcm.profile.build_real_profile`) for
-> full temporal information.
->
-> Codec simulation uses **JPEG compression** as a proxy for HEVC QP. This preserves
-> the monotonic degradation of `u_task_gt` with QP but is not bit-exact HEVC.
-> Use `encode_hm.py` (video_clips backend) for paper-grade per-CTU RDO.
+Tune entropy if RL collapses to a single action: `--entropy_weight 0.8 --entropy_floor 0.3`.
+
+Diagnose state-adaptivity with stochastic test (samples from policy instead of argmax):
+
+```bash
+python vcm/test_vcm.py --policy rl --stochastic \
+  --profile_csv data/offline_profiles/bdd100k_x265_intra_profile.csv \
+  --model_dir results/vcm_models_x265 \
+  --log_dir results/vcm_logs_x265_stoch
+```
+
+A healthy state-conditional policy spreads probability across 3–8 actions when
+viewed via the `action_distribution_json` field; full collapse is one action at
+4000.
+
+> **Limitation**: HF BDD100K provides image/keyframe data, not video sequences.
+> The `motion` field is set to **0.0** in both image backends. For full
+> temporal info use Option B (video_clips backend).
 
 ### Option B — Local video clips (full video, paper-grade)
 
@@ -153,7 +184,7 @@ Use `--dataset_backend kaggle_bdd100k` (placeholder only).
 If the HF dataset field layout is unknown, the first 3 raw samples are saved to
 `results/vcm_logs/hf_bdd100k_debug.json` automatically. Check `sample.keys()` in
 that file and update `convert_hf_bdd_sample_to_standard()` in
-`vcm/datasets/hf_bdd100k_loader.py` if needed.
+`vcm/data_backends/hf_bdd100k_loader.py` if needed.
 
 ---
 

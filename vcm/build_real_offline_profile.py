@@ -3,21 +3,31 @@
 CL-ROI-VCM: Build real offline profile CSV from various dataset backends.
 
 Backends:
-    hf_bdd100k   — Hugging Face `dgural/bdd100k` (image/keyframe, no registration)
-    video_clips  — local mp4/mov clips via vcm/profile/ pipeline (full video)
-    kaggle_bdd100k — (stub) Kaggle BDD100K, not yet implemented
+    hf_bdd100k        — HF `dgural/bdd100k`, JPEG-quality proxy for HEVC QP (fast).
+    hf_bdd100k_x265   — HF `dgural/bdd100k`, REAL libx265 HEVC intra encoding
+                        per image (slower; paper-grade real-codec).
+    video_clips       — local mp4/mov clips via vcm/profile/ pipeline (full video).
+    kaggle_bdd100k    — (stub) Kaggle BDD100K, not yet implemented.
 
 For the `hf_bdd100k` backend, codec simulation is performed image-by-image using
 JPEG compression at a quality level derived from (qp_base, delta_qp_roi). This is a
-coarse proxy for HEVC QP; use the `video_clips` backend with encode_hm.py for
-paper-grade per-CTU RDO.
+coarse proxy for HEVC QP; use `hf_bdd100k_x265` or the `video_clips` backend with
+encode_hm.py for paper-grade rate-distortion behavior.
 
 Run from repo root:
+    # Fast proxy (JPEG):
     python vcm/build_real_offline_profile.py \\
         --dataset_backend hf_bdd100k \\
         --hf_dataset_name dgural/bdd100k \\
         --max_samples 1000 \\
         --output_csv data/offline_profiles/bdd100k_hf_detection_profile.csv
+
+    # Real HEVC intra via libx265:
+    python vcm/build_real_offline_profile.py \\
+        --dataset_backend hf_bdd100k_x265 \\
+        --hf_dataset_name dgural/bdd100k \\
+        --max_samples 500 \\
+        --output_csv data/offline_profiles/bdd100k_x265_intra_profile.csv
 """
 
 from __future__ import print_function
@@ -167,10 +177,21 @@ def _sample_network(rng):
 
 
 # ---------------------------------------------------------------------------
-# HF BDD100K backend
+# Real x265 codec wrapper (HEVC intra per image)
 # ---------------------------------------------------------------------------
 
-def run_hf_bdd100k(args, csv_writer, rng):
+def _compress_roi_aware_x265(pil_img, boxes, qp_base, delta_qp_roi):
+    """Run libx265 intra encoding (real HEVC). Returns (decoded_img, bytes)."""
+    from vcm.profile.x265_image_codec import encode_image_x265  # noqa: WPS433
+    res = encode_image_x265(pil_img, qp_base, delta_qp_roi, boxes=boxes)
+    return res["decoded"], int(res["total_bytes"])
+
+
+# ---------------------------------------------------------------------------
+# HF BDD100K backend (JPEG proxy and x265 share the same loop, codec swappable)
+# ---------------------------------------------------------------------------
+
+def run_hf_bdd100k(args, csv_writer, rng, codec="jpeg"):
     try:
         from vcm.data_backends.hf_bdd100k_loader import load_hf_bdd100k  # noqa: WPS433
     except Exception as e:
@@ -191,6 +212,17 @@ def run_hf_bdd100k(args, csv_writer, rng):
     if not _ULTRALYTICS_OK:
         raise SystemExit("ultralytics is not importable. Run: pip install ultralytics")
     model = _YOLO_CLS(args.yolo_weights)
+
+    if codec == "x265":
+        from vcm.profile.x265_image_codec import libx265_available  # noqa: WPS433
+        if not libx265_available():
+            raise SystemExit(
+                "ffmpeg libx265 encoder not available. Install via "
+                "`conda install -c conda-forge ffmpeg x265 -y`."
+            )
+        print("Codec: libx265 (HEVC intra per image)")
+    else:
+        print("Codec: JPEG proxy (fast)")
 
     total_rows = 0
     t_start = time.time()
@@ -230,9 +262,14 @@ def run_hf_bdd100k(args, csv_writer, rng):
 
         for qp_base in cfg.QP_BASE_SET:
             for delta_qp_roi in cfg.ROI_QP_OFFSET_SET:
-                compressed_img, total_bytes, _ = _compress_roi_aware(
-                    pil_orig, gt_boxes, qp_base, delta_qp_roi
-                )
+                if codec == "x265":
+                    compressed_img, total_bytes = _compress_roi_aware_x265(
+                        pil_orig, gt_boxes, qp_base, delta_qp_roi
+                    )
+                else:
+                    compressed_img, total_bytes, _ = _compress_roi_aware(
+                        pil_orig, gt_boxes, qp_base, delta_qp_roi
+                    )
                 bitrate_mbps = _estimate_bitrate(total_bytes, w, h, fps=30.0)
 
                 pred = _yolo_on_pil(compressed_img, model,
@@ -259,10 +296,13 @@ def run_hf_bdd100k(args, csv_writer, rng):
                 csv_writer.writerow(row)
                 total_rows += 1
 
-        if (i + 1) % 50 == 0:
+        interval = 10 if codec == "x265" else 50
+        if (i + 1) % interval == 0:
             elapsed = time.time() - t_start
-            print("  Processed %d / %d samples | rows=%d | %.1fs" % (
-                i + 1, len(samples), total_rows, elapsed))
+            rate = (i + 1) / max(elapsed, 1e-6)
+            eta_s = (len(samples) - (i + 1)) / max(rate, 1e-6)
+            print("  Processed %d / %d samples | rows=%d | %.1fs | ETA %.0fs" % (
+                i + 1, len(samples), total_rows, elapsed, eta_s))
 
     print("  Total rows written: %d" % total_rows)
 
@@ -287,9 +327,9 @@ def parse_args():
     )
     ap.add_argument(
         "--dataset_backend",
-        choices=["hf_bdd100k", "video_clips", "kaggle_bdd100k"],
+        choices=["hf_bdd100k", "hf_bdd100k_x265", "video_clips", "kaggle_bdd100k"],
         default="hf_bdd100k",
-        help="Data source backend.",
+        help="Data source backend (hf_bdd100k_x265 uses real libx265 HEVC intra).",
     )
     # HF options
     ap.add_argument("--hf_dataset_name", type=str, default="dgural/bdd100k")
@@ -328,7 +368,9 @@ def main():
         writer.writeheader()
 
         if args.dataset_backend == "hf_bdd100k":
-            run_hf_bdd100k(args, writer, rng)
+            run_hf_bdd100k(args, writer, rng, codec="jpeg")
+        elif args.dataset_backend == "hf_bdd100k_x265":
+            run_hf_bdd100k(args, writer, rng, codec="x265")
         elif args.dataset_backend == "video_clips":
             raise SystemExit(
                 "For video_clips backend use: python -m vcm.profile.build_real_profile"

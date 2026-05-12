@@ -147,7 +147,12 @@ def run_policy(args, profile_csv, trace_dir):
             obs = env.get_video_chunk(qp_base, delta_roi)
         elif policy == "rl":
             prob = actor.predict(np.reshape(state, (1, cfg.S_INFO, cfg.S_LEN)))[0]
-            action_id = int(np.argmax(prob))
+            if getattr(args, "stochastic", False):
+                prob = np.asarray(prob, dtype=np.float64)
+                prob = prob / max(prob.sum(), 1e-9)
+                action_id = int(np.random.choice(cfg.A_DIM, p=prob))
+            else:
+                action_id = int(np.argmax(prob))
             qp_base, delta_roi = cfg.decode_action(action_id)
             obs = env.get_video_chunk(qp_base, delta_roi)
         else:
@@ -247,6 +252,12 @@ def parse_args():
     )
     ap.add_argument("--max_steps", type=int, default=4000)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--stochastic",
+        action="store_true",
+        help="For --policy rl: sample action from policy distribution instead of argmax. "
+             "Useful to check whether the trained policy is state-adaptive.",
+    )
     return ap.parse_args()
 
 
