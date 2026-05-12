@@ -20,6 +20,7 @@ class Environment(object):
     Steps through synthetic/offline CSV profiles and optionally overlays trace bandwidth.
     """
 
+    # Default; overridden per video_id after the profile is loaded.
     FRAMES_PER_VIDEO = 600
 
     def __init__(
@@ -60,6 +61,8 @@ class Environment(object):
     def _load_profile(self):
         self._lookup.clear()
         self._video_ids = []
+        # Track max frame_id per video to set episode length dynamically.
+        _max_fid = {}
         with open(self.profile_csv, "r", newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -71,9 +74,13 @@ class Environment(object):
                 self._lookup[key] = row
                 if vid not in self._video_ids:
                     self._video_ids.append(vid)
+                if vid not in _max_fid or fid > _max_fid[vid]:
+                    _max_fid[vid] = fid
         self._video_ids = sorted(self._video_ids)
         if not self._video_ids:
             raise ValueError("Empty profile CSV: %s" % self.profile_csv)
+        # frames_per_video[vid] = number of valid frame indices (0 .. max_fid inclusive)
+        self._frames_per_video = {vid: _max_fid[vid] + 1 for vid in self._video_ids}
 
     def _current_vid_fid(self):
         vid = self._video_ids[self.video_ix % len(self._video_ids)]
@@ -140,11 +147,15 @@ class Environment(object):
             "end_of_video": False,
         }
 
+    def _frames_for_current_video(self):
+        vid = self._video_ids[self.video_ix % len(self._video_ids)]
+        return self._frames_per_video.get(vid, self.FRAMES_PER_VIDEO)
+
     def _advance_indices(self):
         """Advance frame/video pointers after one step. Set end_of_video on video boundary."""
         end_of_video = False
         self.frame_ix += 1
-        if self.frame_ix >= self.FRAMES_PER_VIDEO:
+        if self.frame_ix >= self._frames_for_current_video():
             end_of_video = True
             self.frame_ix = 0
             self.video_ix += 1
