@@ -16,8 +16,8 @@ GAMMA = 0.9
 # action when reward variance across actions is small (e.g. real BDD profile).
 # Floor at 0.2 prevents premature determinism even after long training.
 ENTROPY_WEIGHT = 0.5
-ENTROPY_WEIGHT_FLOOR = 0.2
-ENTROPY_WEIGHT_DECAY = 0.9998
+ENTROPY_WEIGHT_FLOOR = 0.05   # was 0.2; lower floor lets policy become peaked
+ENTROPY_WEIGHT_DECAY = 0.9995 # was 0.9998; faster decay to reach floor sooner
 ENTROPY_EPS = 1e-6
 leaky = 0.2
 

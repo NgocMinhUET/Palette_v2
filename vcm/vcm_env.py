@@ -18,6 +18,12 @@ from task_utility_estimator import TaskUtilityEstimator
 class Environment(object):
     """
     Steps through synthetic/offline CSV profiles and optionally overlays trace bandwidth.
+
+    Network conditions (bandwidth, RTT, loss) are properties of the current
+    *timestep*, not of the action chosen at that step.  A single set of network
+    conditions is sampled at the start of each step and held constant across all
+    possible actions so that the reward difference between actions reflects only
+    the codec RD trade-off — not spurious bandwidth noise baked into the profile.
     """
 
     # Default; overridden per video_id after the profile is loaded.
@@ -58,6 +64,11 @@ class Environment(object):
         self.video_ix = 0
         self.frame_ix = 0
 
+        # Pre-sample network conditions for the FIRST step.  These are refreshed
+        # after every call to get_video_chunk() so that all 20 possible actions
+        # at the same step see identical network conditions.
+        self._step_bw, self._step_rtt, self._step_loss = self._draw_step_network()
+
     def _load_profile(self):
         self._lookup.clear()
         self._video_ids = []
@@ -82,6 +93,22 @@ class Environment(object):
         # frames_per_video[vid] = number of valid frame indices (0 .. max_fid inclusive)
         self._frames_per_video = {vid: _max_fid[vid] + 1 for vid in self._video_ids}
 
+    def _draw_step_network(self):
+        """Return (bw_mbps, rtt_ms, loss) for the current step.
+
+        Bandwidth is taken from the bandwidth trace when available; otherwise
+        sampled uniformly.  RTT and loss are always freshly sampled so that
+        temporal variation is independent of which action the agent picks.
+        """
+        bw_trace = self._trace_bw_at_cursor()
+        if bw_trace is not None:
+            bw = float(bw_trace)
+        else:
+            bw = float(self.rng.uniform(1.5, cfg.MAX_BANDWIDTH_MBPS))
+        rtt = float(self.rng.uniform(25.0, 180.0))
+        loss = float(np.clip(self.rng.uniform(0.0, 0.08), 0.0, 1.0))
+        return bw, rtt, loss
+
     def _current_vid_fid(self):
         vid = self._video_ids[self.video_ix % len(self._video_ids)]
         fid = self.frame_ix
@@ -100,9 +127,11 @@ class Environment(object):
     def _advance_trace_cursor(self):
         self.trace_pkt_idx += 1
 
-    def _row_to_obs(self, row, bandwidth_mbps_effective):
-        rtt_ms = float(row["rtt_ms"])
-        loss_csv = float(row["loss"])
+    def _row_to_obs(self, row, bandwidth_mbps_effective, rtt_ms_override=None, loss_override=None):
+        # Network conditions come from the step-level sampled values, not from
+        # the per-action profile row (which has arbitrary random values).
+        rtt_ms = rtt_ms_override if rtt_ms_override is not None else float(row["rtt_ms"])
+        loss_csv = loss_override if loss_override is not None else float(row["loss"])
         bitrate_mbps = float(row["bitrate_mbps"])
         qp_base = int(row["qp_base"])
         delta_qp_roi = int(row["delta_qp_roi"])
@@ -171,36 +200,45 @@ class Environment(object):
             raise KeyError("Missing profile row for %s" % (key,))
 
         row = self._lookup[key]
-        bw_trace = self._trace_bw_at_cursor()
-        if bw_trace is not None:
-            bandwidth_mbps = bw_trace
-            self._advance_trace_cursor()
-        else:
-            bandwidth_mbps = float(row["bandwidth_mbps"])
+        # Use the pre-sampled step-level network conditions (consistent for all
+        # 20 actions at this step; avoids reward noise from per-action bandwidth).
+        obs = self._row_to_obs(
+            row,
+            self._step_bw,
+            rtt_ms_override=self._step_rtt,
+            loss_override=self._step_loss,
+        )
 
-        obs = self._row_to_obs(row, bandwidth_mbps)
+        # Advance trace cursor BEFORE resampling so the next step gets the next
+        # trace point (relevant only when trace is loaded).
+        if self._trace_bw_at_cursor() is not None:
+            self._advance_trace_cursor()
+
         obs["end_of_video"] = self._advance_indices()
+
+        # Pre-sample network conditions for the NEXT step.
+        self._step_bw, self._step_rtt, self._step_loss = self._draw_step_network()
         return obs
 
     def peek_action_observations(self):
         """
         For oracle / debugging: all action outcomes at the current (video, frame) without advancing.
-        Each dict includes u_task_gt and estimated rewards components.
+        All 20 actions use the SAME step-level network conditions so scores are comparable.
         """
         vid, fid = self._current_vid_fid()
         out = []
-        bw_trace = self._trace_bw_at_cursor()
         for aid in range(cfg.A_DIM):
             qb, dr = cfg.decode_action(aid)
             key = (vid, fid, int(qb), int(dr))
             if key not in self._lookup:
                 raise KeyError("peek missing profile row for %s" % (key,))
             row = self._lookup[key]
-            if bw_trace is not None:
-                bw_use = bw_trace
-            else:
-                bw_use = float(row["bandwidth_mbps"])
-            out.append(self._row_to_obs(row, bw_use))
+            out.append(self._row_to_obs(
+                row,
+                self._step_bw,
+                rtt_ms_override=self._step_rtt,
+                loss_override=self._step_loss,
+            ))
         return out
 
     def reset_episode(self):
@@ -212,6 +250,7 @@ class Environment(object):
             self.trace_pkt_idx = int(self.rng.randint(0, 5000))
         else:
             self.trace_pkt_idx = 0
+        self._step_bw, self._step_rtt, self._step_loss = self._draw_step_network()
 
 
 def get_state_vector(obs, prev_obs=None):
