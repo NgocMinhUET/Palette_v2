@@ -15,9 +15,16 @@ GAMMA = 0.9
 # Higher default entropy keeps the 20-action policy from collapsing to a single
 # action when reward variance across actions is small (e.g. real BDD profile).
 # Floor at 0.2 prevents premature determinism even after long training.
-ENTROPY_WEIGHT = 0.5
-ENTROPY_WEIGHT_FLOOR = 0.05   # was 0.2; lower floor lets policy become peaked
-ENTROPY_WEIGHT_DECAY = 0.9995 # was 0.9998; faster decay to reach floor sooner
+# Entropy annealing schedule (tuned for 20-action VCM policy with weak reward signal):
+#   - Initial 0.3: strong enough to prevent early collapse, not so high it takes
+#     >1500 episodes to decay to a level where reward gradient dominates.
+#   - Floor 0.01: entropy bonus ~0.01×log(20)≈0.03 << typical advantage ~0.2,
+#     so policy gradient dominates cleanly after floor is reached.
+#   - Decay 0.997: floor is reached at ep ~1131, leaving ~870 eps of pure learning
+#     in a 2000-episode run. With 0.9995 the floor would not be reached until ep 4600.
+ENTROPY_WEIGHT = 0.3
+ENTROPY_WEIGHT_FLOOR = 0.01
+ENTROPY_WEIGHT_DECAY = 0.997
 ENTROPY_EPS = 1e-6
 leaky = 0.2
 

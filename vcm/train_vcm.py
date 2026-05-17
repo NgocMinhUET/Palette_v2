@@ -189,8 +189,11 @@ def central_agent(net_params_queues, exp_queues, agent_processes, episodes_targe
 
             if episode >= episodes_target:
                 for p in agent_processes:
-                    if p.is_alive():
-                        p.terminate()
+                    try:
+                        if p.is_alive():
+                            p.terminate()
+                    except Exception:
+                        pass
                 writer.close()
                 os._exit(0)
 
