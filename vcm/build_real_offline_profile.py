@@ -104,19 +104,31 @@ def _compress_image_jpeg(pil_img, quality):
 
 def _compress_roi_aware(pil_img, boxes, qp_base, delta_qp_roi):
     """
-    JPEG compression with ROI bias:
-    - background: compressed at qp_base quality
-    - ROI regions: composited with higher quality patch (qp_base + delta_qp_roi)
+    JPEG compression with ROI bias (proxy for HEVC ROI-QP, mirrors x265_image_codec semantics).
+
+    Three modes matching encode_image_x265:
+      delta_qp_roi < 0  — background at q_bg, ROI patches at higher quality (q_roi > q_bg).
+                          More bytes, better mAP in ROI.
+      delta_qp_roi == 0 — whole image at q_bg, no ROI distinction.
+      delta_qp_roi > 0  — whole image at q_roi (lower JPEG quality = worse, fewer bytes).
+                          ROI is not protected; mAP drops.
+
     Returns (compressed PIL Image, total bytes, effective_bitrate_proxy).
     """
     from PIL import Image  # noqa: WPS433
     q_bg = _qp_to_jpeg_quality(qp_base)
-    q_roi = _qp_to_jpeg_quality(max(0, qp_base + delta_qp_roi))  # delta<0 -> lower QP -> better
+    q_roi = _qp_to_jpeg_quality(max(0, qp_base + delta_qp_roi))  # delta<0 -> better; delta>0 -> worse
 
-    bg, bg_bytes = _compress_image_jpeg(pil_img, q_bg)
     w, h = pil_img.size
 
+    if delta_qp_roi > 0:
+        # Whole frame at lower quality: no ROI protection.
+        degraded, deg_bytes = _compress_image_jpeg(pil_img, q_roi)
+        return degraded, deg_bytes, deg_bytes
+
+    bg, bg_bytes = _compress_image_jpeg(pil_img, q_bg)
     total_bytes = bg_bytes
+
     if delta_qp_roi < 0 and boxes:
         roi_img = bg.copy()
         for box in boxes:
@@ -134,6 +146,7 @@ def _compress_roi_aware(pil_img, boxes, qp_base, delta_qp_roi):
         buf = io.BytesIO()
         roi_img.save(buf, format="PNG")
         return roi_img, total_bytes, total_bytes
+
     return bg, bg_bytes, bg_bytes
 
 

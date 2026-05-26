@@ -133,18 +133,35 @@ def encode_image_x265(pil_img, qp_base, delta_qp_roi, boxes=None):
     """
     Encode a single PIL image with libx265 at the given QP (ROI-aware).
 
+    Three distinct coding modes, corresponding to VCM ROI protection levels:
+
+      delta_qp_roi < 0  (protect ROI)
+          Background encoded at qp_base; ROI bounding-box patches re-encoded
+          at qp_base + delta_qp_roi (lower QP = higher quality).
+          Effect: more bits for ROI → better mAP, higher total bitrate.
+
+      delta_qp_roi == 0  (neutral)
+          Whole frame encoded at qp_base.  No ROI distinction.
+
+      delta_qp_roi > 0  (deprioritise ROI / save bits)
+          Whole frame encoded at qp_base + delta_qp_roi (higher QP).
+          ROI region is NOT protected; quality drops uniformly.
+          Effect: fewer bits, lower mAP (especially in ROI).
+          This is the cross-layer trade-off the VCM agent must learn to avoid
+          when roi_area is high, and may exploit when roi_area is negligible.
+
     Args:
         pil_img: PIL.Image (RGB)
         qp_base: int, base HEVC QP (0..51)
-        delta_qp_roi: int, ROI QP offset. Negative → better ROI quality.
-        boxes: optional list of [x1, y1, x2, y2]. Only used when delta_qp_roi < 0.
+        delta_qp_roi: int, ROI QP offset.
+        boxes: optional list of [x1, y1, x2, y2]. Used when delta_qp_roi < 0.
 
     Returns:
         dict {
             "decoded": PIL.Image,
-            "total_bytes": int,         # sum of background + ROI bytes
+            "total_bytes": int,
             "effective_qp_bg": int,
-            "effective_qp_roi": int,    # only if ROI mode applied
+            "effective_qp_roi": int,
             "n_roi_patches": int,
         }
     """
@@ -165,11 +182,27 @@ def encode_image_x265(pil_img, qp_base, delta_qp_roi, boxes=None):
         w, h = _save_padded_png(pil_rgb, in_png)
         pil_rgb_even = Image.open(in_png).convert("RGB")
 
+        # --- delta_qp_roi > 0: encode whole frame at elevated QP (no ROI protection) ---
+        if delta_qp_roi > 0:
+            hi_dir = os.path.join(tmpdir, "hi")
+            os.makedirs(hi_dir, exist_ok=True)
+            hi_bytes, hi_decoded_path = _encode_intra_one(in_png, qp_roi, hi_dir)
+            hi_decoded = Image.open(hi_decoded_path).convert("RGB")
+            return {
+                "decoded": hi_decoded,
+                "total_bytes": hi_bytes,
+                "effective_qp_bg": qp_roi,
+                "effective_qp_roi": qp_roi,
+                "n_roi_patches": 0,
+            }
+
+        # --- delta_qp_roi == 0 or delta_qp_roi < 0: encode background at qp_base ---
         bg_dir = os.path.join(tmpdir, "bg")
         os.makedirs(bg_dir, exist_ok=True)
         bg_bytes, bg_decoded_path = _encode_intra_one(in_png, qp_bg, bg_dir)
         bg_decoded = Image.open(bg_decoded_path).convert("RGB")
 
+        # --- delta_qp_roi < 0: protect ROI with higher-quality patches ---
         n_patches = 0
         n_skipped = 0
         total_bytes = bg_bytes
@@ -217,6 +250,7 @@ def encode_image_x265(pil_img, qp_base, delta_qp_roi, boxes=None):
                 "n_roi_skipped": n_skipped,
             }
 
+        # --- delta_qp_roi == 0: no ROI distinction ---
         return {
             "decoded": bg_decoded,
             "total_bytes": total_bytes,
