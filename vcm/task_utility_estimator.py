@@ -15,6 +15,16 @@ import vcm_config as cfg
 
 
 def _heuristic_u(features_dict):
+    """Heuristic task utility estimate aligned with profile v2 empirical trends.
+
+    Key insight from profile v2 (inspect_profile.py):
+      - dROI < 0: protects ROI, increases u_task_gt by ~0.03-0.05 per step
+      - dROI > 0: degrades ROI quality, DECREASES u_task_gt by ~0.08-0.12 per step
+      - QP increase of 4 reduces u_task_gt by ~0.06-0.10
+
+    The previous heuristic had NO penalty for dROI > 0, causing RL to treat
+    action 11 (QP=32, dROI=+3) as equivalent to action 10 (QP=32, dROI=0).
+    """
     mean_conf = float(features_dict.get("mean_conf", 0.5))
     qp_base = float(features_dict.get("qp_base", 28))
     delta_qp_roi = float(features_dict.get("delta_qp_roi", 0))
@@ -23,11 +33,12 @@ def _heuristic_u(features_dict):
     bitrate_mbps = float(features_dict.get("bitrate_mbps", 2.0))
 
     u = mean_conf
-    u -= 0.015 * (qp_base - 24)
-    u += 0.02 * max(0.0, -delta_qp_roi)
+    u -= 0.02 * (qp_base - 24)                    # QP penalty (tuned from 0.015)
+    u += 0.025 * max(0.0, -delta_qp_roi)          # reward for dROI < 0
+    u -= 0.04 * max(0.0, delta_qp_roi)            # NEW: penalty for dROI > 0
     u -= 0.001 * motion
     u -= 0.1 * loss
-    u -= 0.01 * max(0.0, bitrate_mbps - 5)
+    u -= 0.005 * max(0.0, bitrate_mbps - 8)       # relaxed bitrate penalty
     return float(np.clip(u, 0.0, 1.0))
 
 

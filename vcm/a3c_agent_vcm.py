@@ -12,19 +12,22 @@ __all__ = [tf]
 import tflearn
 
 GAMMA = 0.9
-# Higher default entropy keeps the 20-action policy from collapsing to a single
-# action when reward variance across actions is small (e.g. real BDD profile).
-# Floor at 0.2 prevents premature determinism even after long training.
-# Entropy annealing schedule (tuned for 20-action VCM policy with weak reward signal):
-#   - Initial 0.3: strong enough to prevent early collapse, not so high it takes
-#     >1500 episodes to decay to a level where reward gradient dominates.
-#   - Floor 0.01: entropy bonus ~0.01×log(20)≈0.03 << typical advantage ~0.2,
-#     so policy gradient dominates cleanly after floor is reached.
-#   - Decay 0.997: floor is reached at ep ~1131, leaving ~870 eps of pure learning
-#     in a 2000-episode run. With 0.9995 the floor would not be reached until ep 4600.
-ENTROPY_WEIGHT = 0.3
-ENTROPY_WEIGHT_FLOOR = 0.01
-ENTROPY_WEIGHT_DECAY = 0.997
+# Entropy annealing schedule (tuned for Run 6 with fixed reward signal):
+#
+# Run 5 post-mortem: policy entropy remained 4.26 bits (near-uniform) after 1000 ep.
+# Root cause: reward variance was too small relative to entropy bonus.
+#
+# Fix (Run 6):
+#   - Initial 0.1: lower starting point so policy gradient dominates earlier.
+#   - Floor 0.001: near-zero entropy bonus after convergence, allowing peaked policy.
+#   - Decay 0.995: floor reached at ep ~920, leaving majority of training for
+#     exploitation with minimal entropy regularization.
+#
+# Combined with fixed heuristic (dROI > 0 penalty) and removed delay penalty,
+# reward variance should be larger → faster convergence to adaptive policy.
+ENTROPY_WEIGHT = 0.1
+ENTROPY_WEIGHT_FLOOR = 0.001
+ENTROPY_WEIGHT_DECAY = 0.995
 ENTROPY_EPS = 1e-6
 leaky = 0.2
 

@@ -17,21 +17,22 @@ A_DIM = len(QP_BASE_SET) * len(ROI_QP_OFFSET_SET)
 
 # Reward weights (training uses u_task_hat only; u_task_gt is offline/oracle)
 #
-# Run 4 post-mortem (diagnose_policy.py, ep 2000):
-#   ALPHA * u_task_hat  ≈ +0.38
-#   GAMMA * delay       ≈ -0.43   ← delay dominated; policy drove QP to 40 to lower bitrate
+# Run 5 post-mortem (diagnose_policy.py):
+#   - Policy collapsed to action 11 (QP=32, dROI=+3) with u_task_gt=0.533
+#   - Root cause: delay penalty forced RL to minimize bitrate regardless of task quality
+#   - Heuristic u_task_hat had no penalty for dROI > 0
 #
-# Fix (Run 5):
-#   B1 — reduce GAMMA 10x and penalise only the overshoot above DELAY_TARGET_MS
-#          so the agent is not rewarded for blindly compressing harder.
-#   B2 — scale task reward by (1 + ROI_TASK_SCALE * roi_area) so the vision branch
-#          gets a strong gradient: high-ROI frames are worth more quality investment.
-#          This is the key cross-layer coupling for VCM.
+# Fix (Run 6):
+#   - Remove delay penalty entirely (GAMMA_DELAY = 0): VCM objective is task/bitrate,
+#     not delay. Real-time constraints should be handled by rate control, not RL reward.
+#   - Increase BETA_BITRATE slightly to create meaningful task vs bitrate trade-off.
+#   - Keep ROI_TASK_SCALE for cross-layer coupling (vision → codec decision).
+#   - Heuristic u_task_hat now includes dROI > 0 penalty (task_utility_estimator.py).
 ALPHA_TASK = 1.0
-BETA_BITRATE = 0.01
-GAMMA_DELAY = 1e-4          # was 0.001; only overshoot above DELAY_TARGET_MS is penalised
+BETA_BITRATE = 0.02         # increased from 0.01 to create task/bitrate trade-off
+GAMMA_DELAY = 0.0           # REMOVED: delay penalty was forcing low-bitrate actions
 DELTA_LOSS = 0.0
-DELAY_TARGET_MS = 250.0     # frames delivered under this threshold pay zero delay penalty
+DELAY_TARGET_MS = 500.0     # unused when GAMMA_DELAY=0, kept for reference
 ROI_TASK_SCALE = 2.0        # effective alpha for a frame with roi_area=0.5 → 1 + 2*0.5 = 2.0
 
 MAX_BANDWIDTH_MBPS = 15.0
