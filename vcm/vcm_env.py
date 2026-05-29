@@ -69,6 +69,12 @@ class Environment(object):
         # at the same step see identical network conditions.
         self._step_bw, self._step_rtt, self._step_loss = self._draw_step_network()
 
+        # Track the most recently APPLIED action so the pre-decision state can
+        # carry "previous action" history (qp_prev / bitrate_prev) without
+        # leaking the current action's outcome.  Initialised to neutral values.
+        self._last_qp = int(np.median(cfg.QP_BASE_SET))
+        self._last_bitrate = float(cfg.MAX_BITRATE_MBPS) * 0.3
+
     def _load_profile(self):
         self._lookup.clear()
         self._video_ids = []
@@ -193,6 +199,42 @@ class Environment(object):
             self.trace_pkt_idx = self.rng.randint(0, 1000)
         return end_of_video
 
+    def current_decision_features(self):
+        """Pre-action observation used to DECIDE the encoding action.
+
+        Returns the current frame's *content* features and the current network
+        condition, both available BEFORE the action is chosen:
+
+          - Content (roi_area, obj_count, mean_conf, motion) is identical across
+            all 20 actions of a frame (computed from the uncompressed frame), so
+            exposing it pre-encode is realistic for a VCM controller.
+          - Network (bandwidth, rtt, loss) is the condition that will apply to
+            this step (pre-sampled in _step_*).
+          - qp_base / bitrate_mbps carry the PREVIOUS applied action as history.
+
+        This fixes the causal misalignment where the agent previously decided an
+        action for frame t+1 using frame t's (independent) observation, which made
+        the state statistically uninformative and forced policy collapse.
+        """
+        vid, fid = self._current_vid_fid()
+        qb0 = cfg.QP_BASE_SET[0]
+        dr0 = cfg.ROI_QP_OFFSET_SET[0]
+        key = (vid, fid, int(qb0), int(dr0))
+        if key not in self._lookup:
+            raise KeyError("Missing profile row for decision features %s" % (key,))
+        row = self._lookup[key]
+        return {
+            "bandwidth_mbps": float(self._step_bw),
+            "rtt_ms": float(self._step_rtt),
+            "loss": float(self._step_loss),
+            "qp_base": int(self._last_qp),
+            "bitrate_mbps": float(self._last_bitrate),
+            "roi_area": float(row["roi_area"]),
+            "obj_count": int(row["obj_count"]),
+            "mean_conf": float(row["mean_conf"]),
+            "motion": float(row["motion"]),
+        }
+
     def get_video_chunk(self, qp_base, delta_qp_roi):
         vid, fid = self._current_vid_fid()
         key = (vid, fid, int(qp_base), int(delta_qp_roi))
@@ -208,6 +250,10 @@ class Environment(object):
             rtt_ms_override=self._step_rtt,
             loss_override=self._step_loss,
         )
+
+        # Remember this action's outcome as history for the NEXT decision state.
+        self._last_qp = int(qp_base)
+        self._last_bitrate = float(obs["bitrate_mbps"])
 
         # Advance trace cursor BEFORE resampling so the next step gets the next
         # trace point (relevant only when trace is loaded).
@@ -251,6 +297,8 @@ class Environment(object):
         else:
             self.trace_pkt_idx = 0
         self._step_bw, self._step_rtt, self._step_loss = self._draw_step_network()
+        self._last_qp = int(np.median(cfg.QP_BASE_SET))
+        self._last_bitrate = float(cfg.MAX_BITRATE_MBPS) * 0.3
 
 
 def get_state_vector(obs, prev_obs=None):

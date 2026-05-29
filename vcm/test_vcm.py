@@ -154,6 +154,11 @@ def run_policy(args, profile_csv, trace_dir):
             qp_base, delta_roi = cfg.decode_action(action_id)
             obs = env.get_video_chunk(qp_base, delta_roi)
         elif policy == "rl":
+            # Causal alignment: decide using CURRENT frame content + network.
+            feat = env.current_decision_features()
+            vec = get_state_vector(feat)
+            state = np.roll(state, -1, axis=1)
+            state[:, -1] = vec
             prob = actor.predict(np.reshape(state, (1, cfg.S_INFO, cfg.S_LEN)))[0]
             if getattr(args, "stochastic", False):
                 prob = np.asarray(prob, dtype=np.float64)
@@ -177,13 +182,10 @@ def run_policy(args, profile_csv, trace_dir):
 
         steps += 1
 
-        if policy == "rl":
-            vec = get_state_vector(obs)
-            state = np.roll(state, -1, axis=1)
-            state[:, -1] = vec
-
         if obs["end_of_video"]:
             env.reset_episode()
+            if policy == "rl":
+                state = np.zeros((cfg.S_INFO, cfg.S_LEN))
 
     if sess is not None:
         sess.close()

@@ -268,33 +268,39 @@ def work_agent(
         actor.set_network_params(actor_net_params)
         critic.set_network_params(critic_net_params)
 
-        action = DEFAULT_ACTION
-        qp_base, delta_roi = cfg.decode_action(action)
-
-        action_vec = np.zeros(A_DIM)
-        action_vec[action] = 1
-
-        s_batch = [np.zeros((S_INFO, S_LEN))]
-        a_batch = [action_vec]
+        s_batch = []
+        a_batch = []
         r_batch = []
         entropy_record = []
+        prev_state = np.zeros((S_INFO, S_LEN))
 
         time_stamp = 0
-        rand_times = 1
 
         while True:
-            obs = net_env.get_video_chunk(qp_base, delta_roi)
-            reward = cfg.compute_vcm_reward(obs)
-
-            time_stamp += 1
-            r_batch.append(reward)
-
-            vec = get_state_vector(obs)
-            state = np.array(s_batch[-1], copy=True)
-            state = np.roll(state, -1, axis=1)
+            # --- DECIDE: build state from CURRENT frame content + network ---
+            feat = net_env.current_decision_features()
+            vec = get_state_vector(feat)
+            state = np.roll(prev_state, -1, axis=1)
             state[:, -1] = vec
 
             action_prob = actor.predict(np.reshape(state, (1, S_INFO, S_LEN)))
+
+            action_cumsum = np.cumsum(action_prob)
+            action = int((action_cumsum > np.random.randint(1, RAND_RANGE) / float(RAND_RANGE)).argmax())
+            qp_base, delta_roi = cfg.decode_action(action)
+
+            # --- ACT: apply the chosen action to THIS frame ---
+            obs = net_env.get_video_chunk(qp_base, delta_roi)
+            reward = cfg.compute_vcm_reward(obs)
+            time_stamp += 1
+
+            # --- STORE aligned (state -> action -> reward) ---
+            action_vec = np.zeros(A_DIM)
+            action_vec[action] = 1
+            s_batch.append(state)
+            a_batch.append(action_vec)
+            r_batch.append(reward)
+            entropy_record.append(agent.compute_entropy(action_prob[0]))
 
             prob_str = " ".join(str(format(i, ".5f")) for i in action_prob[0])
             csv_writer.writerow(
@@ -318,23 +324,14 @@ def work_agent(
             )
             csv_file.flush()
 
-            action_cumsum = np.cumsum(action_prob)
-            hitcount = np.zeros(A_DIM)
-            for _ in range(rand_times):
-                hit = (action_cumsum > np.random.randint(1, RAND_RANGE) / float(RAND_RANGE)).argmax()
-                hitcount[hit] = hitcount[hit] + 1
-            action = int(hitcount.argmax())
-
-            entropy_record.append(agent.compute_entropy(action_prob[0]))
-
-            qp_base, delta_roi = cfg.decode_action(action)
+            prev_state = state
 
             if len(r_batch) >= TRAIN_SEQ_LEN or obs["end_of_video"]:
                 exp_queue.put(
                     [
-                        s_batch[1:],
-                        a_batch[1:],
-                        r_batch[1:],
+                        s_batch[:],
+                        a_batch[:],
+                        r_batch[:],
                         obs["end_of_video"],
                         {"entropy": entropy_record},
                     ]
@@ -348,19 +345,7 @@ def work_agent(
                 del a_batch[:]
                 del r_batch[:]
                 del entropy_record[:]
-
-            if obs["end_of_video"]:
-                action = DEFAULT_ACTION
-                qp_base, delta_roi = cfg.decode_action(action)
-                action_vec = np.zeros(A_DIM)
-                action_vec[action] = 1
-                s_batch.append(np.zeros((S_INFO, S_LEN)))
-                a_batch.append(action_vec)
-            else:
-                s_batch.append(state)
-                action_vec = np.zeros(A_DIM)
-                action_vec[action] = 1
-                a_batch.append(action_vec)
+                prev_state = np.zeros((S_INFO, S_LEN))
 
 
 def train_multi(args, profile_csv, trace_dir, model_dir, log_dir):
@@ -471,31 +456,42 @@ def train_single(args, profile_csv, trace_dir, model_dir, log_dir):
         writer = tf.summary.FileWriter(log_dir, sess.graph)
         saver = tf.train.Saver()
 
-        action = DEFAULT_ACTION
-        qp_base, delta_roi = cfg.decode_action(action)
-        action_vec = np.zeros(A_DIM)
-        action_vec[action] = 1
-
-        s_batch = [np.zeros((S_INFO, S_LEN))]
-        a_batch = [action_vec]
+        s_batch = []
+        a_batch = []
         r_batch = []
         entropy_record = []
+        prev_state = np.zeros((S_INFO, S_LEN))
 
         time_stamp = 0
         train_round = 0
 
         while train_round < args.episodes:
-            obs = net_env.get_video_chunk(qp_base, delta_roi)
-            reward = cfg.compute_vcm_reward(obs)
-            time_stamp += 1
-            r_batch.append(reward)
-
-            vec = get_state_vector(obs)
-            state = np.array(s_batch[-1], copy=True)
-            state = np.roll(state, -1, axis=1)
+            # --- DECIDE: build state from CURRENT frame content + network ---
+            # (causal alignment: agent sees the frame it is about to encode)
+            feat = net_env.current_decision_features()
+            vec = get_state_vector(feat)
+            state = np.roll(prev_state, -1, axis=1)
             state[:, -1] = vec
 
             action_prob = actor.predict(np.reshape(state, (1, S_INFO, S_LEN)))
+
+            action_cumsum = np.cumsum(action_prob)
+            action = int((action_cumsum > np.random.randint(1, RAND_RANGE) / float(RAND_RANGE)).argmax())
+            qp_base, delta_roi = cfg.decode_action(action)
+
+            # --- ACT: apply the chosen action to THIS frame ---
+            obs = net_env.get_video_chunk(qp_base, delta_roi)
+            reward = cfg.compute_vcm_reward(obs)
+            time_stamp += 1
+
+            # --- STORE aligned (state -> action -> reward) ---
+            action_vec = np.zeros(A_DIM)
+            action_vec[action] = 1
+            s_batch.append(state)
+            a_batch.append(action_vec)
+            r_batch.append(reward)
+            entropy_record.append(agent.compute_entropy(action_prob[0]))
+
             prob_str = " ".join(str(format(i, ".5f")) for i in action_prob[0])
             csv_writer.writerow(
                 [
@@ -517,27 +513,14 @@ def train_single(args, profile_csv, trace_dir, model_dir, log_dir):
                 ]
             )
 
-            action_cumsum = np.cumsum(action_prob)
-            hitcount = np.zeros(A_DIM)
-            for _ in range(1):
-                hit = (action_cumsum > np.random.randint(1, RAND_RANGE) / float(RAND_RANGE)).argmax()
-                hitcount[hit] += 1
-            action = int(hitcount.argmax())
-            entropy_record.append(agent.compute_entropy(action_prob[0]))
-
-            qp_base, delta_roi = cfg.decode_action(action)
+            prev_state = state
 
             if len(r_batch) >= TRAIN_SEQ_LEN or obs["end_of_video"]:
-                sb = s_batch[1:]
-                ab = a_batch[1:]
-                rb = r_batch[1:]
-                term = obs["end_of_video"]
-
                 actor_gradient, critic_gradient, td_batch = agent.compute_gradients(
-                    s_batch=np.stack(sb, axis=0),
-                    a_batch=np.vstack(ab),
-                    r_batch=np.vstack(rb),
-                    terminal=term,
+                    s_batch=np.stack(s_batch, axis=0),
+                    a_batch=np.vstack(a_batch),
+                    r_batch=np.vstack(r_batch),
+                    terminal=obs["end_of_video"],
                     actor=actor,
                     critic=critic,
                 )
@@ -546,7 +529,7 @@ def train_single(args, profile_csv, trace_dir, model_dir, log_dir):
                 critic.apply_gradients(critic_gradient)
 
                 train_round += 1
-                avg_reward = float(np.mean(rb))
+                avg_reward = float(np.mean(r_batch))
                 avg_td = float(np.mean(td_batch))
                 avg_ent = float(np.mean(entropy_record))
 
@@ -577,19 +560,8 @@ def train_single(args, profile_csv, trace_dir, model_dir, log_dir):
                 del a_batch[:]
                 del r_batch[:]
                 del entropy_record[:]
-
-            if obs["end_of_video"]:
-                action = DEFAULT_ACTION
-                qp_base, delta_roi = cfg.decode_action(action)
-                action_vec = np.zeros(A_DIM)
-                action_vec[action] = 1
-                s_batch.append(np.zeros((S_INFO, S_LEN)))
-                a_batch.append(action_vec)
-            else:
-                s_batch.append(state)
-                action_vec = np.zeros(A_DIM)
-                action_vec[action] = 1
-                a_batch.append(action_vec)
+                # Fresh GRU history at episode boundary.
+                prev_state = np.zeros((S_INFO, S_LEN))
 
         csv_file.flush()
         csv_file.close()
