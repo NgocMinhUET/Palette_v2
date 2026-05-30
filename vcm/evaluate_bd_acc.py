@@ -11,7 +11,9 @@ This script does NOT re-encode video. It aggregates rows already in the profile:
   - BD-Rate between two "methods" defined as sets of operating points
 
 Typical methods (built-in presets):
-  ladder_uniform   — QP in {24,28,32,36,40}, dROI=0  (VCM-style QP ladder)
+  ladder_uniform / vcm_ctc_anchor
+      MPEG VCM CTC conventional video anchor [CTC]: six QP points, dROI=0,
+      task-agnostic (Duan20 non-collaborative / CompressAI-Vision anchor path)
   ladder_roi_prot  — same QP, dROI=-3 when ROI present (matches encode_x265 bias)
   all_actions      — all 20 (qp, dROI) pairs in profile
 
@@ -73,7 +75,7 @@ def load_profile(path):
 
 def preset_points(name):
     """Return list of (qp_base, delta_qp_roi) for a named method."""
-    if name == "ladder_uniform":
+    if name in ("ladder_uniform", "vcm_ctc_anchor", "vcm_pure"):
         return [(qp, 0) for qp in cfg.QP_BASE_SET]
     if name == "ladder_roi_prot":
         return [(qp, -3) for qp in cfg.QP_BASE_SET]
@@ -132,10 +134,13 @@ def aggregate_rd(rows, points, group_key=None):
 
 def bd_rate(anchor_pts, test_pts, accuracy_key="accuracy"):
     """
-    Bjontegaard Delta Rate (%): average bitrate savings of test vs anchor
-    at equal accuracy. Positive => test uses less bitrate at same accuracy.
+    Bjontegaard Delta Rate (%) of TEST relative to ANCHOR at equal accuracy.
 
-    Uses piecewise-linear interpolation in log2(rate) vs accuracy (VCM practice).
+    Sign convention (matches VCEG / VTM-style reporting):
+      Negative BD-Rate => TEST uses LESS bitrate at same accuracy (better).
+      Positive BD-Rate => TEST uses MORE bitrate at same accuracy (worse).
+
+    Uses piecewise-linear interpolation in log2(rate) vs accuracy.
     """
     def _curve(pts):
         br = np.array([max(p["bitrate_mbps"], 1e-6) for p in pts], dtype=np.float64)
@@ -213,10 +218,12 @@ def main():
     print_curve(test_curves[0], "TEST: " + test_name)
 
     bd, msg = bd_rate(anchor_curves[0]["points"], test_curves[0]["points"])
-    print("\n=== BD-Rate (%% bitrate savings of TEST vs ANCHOR at equal accuracy) ===")
+    print("\n=== BD-Rate (%% of TEST vs ANCHOR at equal accuracy) ===")
     print("  %s vs %s : BD-Rate = %+.2f%%  (%s)" % (test_name, anchor_name, bd, msg))
     if bd < 0:
-        print("  (negative => TEST uses MORE bitrate than anchor at same accuracy)")
+        print("  => TEST saves bitrate (better compression efficiency than anchor).")
+    elif bd > 0:
+        print("  => TEST needs more bitrate (worse efficiency than anchor at same accuracy).")
 
     per_seq_bd = []
     if args.per_sequence and n_vid > 1:

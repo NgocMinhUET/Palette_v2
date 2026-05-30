@@ -27,6 +27,12 @@ import load_trace  # noqa: E402
 import vcm_config as cfg  # noqa: E402
 from task_utility_estimator import TaskUtilityEstimator  # noqa: E402
 from vcm_env import Environment, get_state_vector  # noqa: E402
+from policy_baselines import (  # noqa: E402
+    cl_roi_rule_action,
+    palette_xlayer_action,
+    resolve_ctc_anchor_qp,
+    vcm_pure_action,
+)
 
 import a3c_agent_vcm as agent  # noqa: E402
 
@@ -129,10 +135,37 @@ def run_policy(args, profile_csv, trace_dir):
         saver.restore(sess, args.model_path)
 
     state = np.zeros((cfg.S_INFO, cfg.S_LEN))
+    last_qp = int(cfg.QP_BASE_SET[len(cfg.QP_BASE_SET) // 2])
+
+    ctc_anchor_qp = None
+    if policy in ("vcm_pure", "vcm_ctc_anchor"):
+        ctc_anchor_qp = resolve_ctc_anchor_qp(
+            profile_csv,
+            all_cooked_bw=all_cooked_bw,
+        )
+        print(
+            "CTC anchor (MPEG VCM conventional video): qp_base=%d dROI=0 "
+            "(capacity-matched on ladder; RD curve: evaluate_bd_acc "
+            "ladder_uniform / vcm_ctc_anchor)"
+            % ctc_anchor_qp
+        )
 
     steps = 0
     while steps < args.max_steps:
-        if policy == "oracle":
+        if policy in ("vcm_pure", "vcm_ctc_anchor"):
+            action_id, qp_base, delta_roi = vcm_pure_action(ctc_anchor_qp)
+            obs = env.get_video_chunk(qp_base, delta_roi)
+        elif policy == "palette_xlayer":
+            feat = env.current_decision_features()
+            action_id, qp_base, delta_roi = palette_xlayer_action(feat, last_qp)
+            obs = env.get_video_chunk(qp_base, delta_roi)
+            last_qp = int(qp_base)
+        elif policy == "cl_roi_rule":
+            feat = env.current_decision_features()
+            action_id, qp_base, delta_roi = cl_roi_rule_action(feat, last_qp)
+            obs = env.get_video_chunk(qp_base, delta_roi)
+            last_qp = int(qp_base)
+        elif policy == "oracle":
             cand = env.peek_action_observations()
             scores = []
             for o in cand:
@@ -184,6 +217,7 @@ def run_policy(args, profile_csv, trace_dir):
 
         if obs["end_of_video"]:
             env.reset_episode()
+            last_qp = int(cfg.QP_BASE_SET[len(cfg.QP_BASE_SET) // 2])
             if policy == "rl":
                 state = np.zeros((cfg.S_INFO, cfg.S_LEN))
 
@@ -258,7 +292,8 @@ def parse_args():
         "--policy",
         type=str,
         default="all",
-        help="One of: rl, oracle, uniform_qp, fixed_roi, random, all (default: all)",
+        help="One of: rl, oracle, uniform_qp, fixed_roi, random, vcm_pure, "
+             "vcm_ctc_anchor, palette_xlayer, cl_roi_rule, all (default: all)",
     )
     ap.add_argument("--max_steps", type=int, default=4000)
     ap.add_argument("--seed", type=int, default=0)
@@ -271,7 +306,16 @@ def parse_args():
     return ap.parse_args()
 
 
-_ALL_POLICIES = ["uniform_qp", "fixed_roi", "random", "oracle", "rl"]
+_ALL_POLICIES = [
+    "vcm_pure",
+    "palette_xlayer",
+    "uniform_qp",
+    "fixed_roi",
+    "cl_roi_rule",
+    "random",
+    "oracle",
+    "rl",
+]
 
 
 def main():

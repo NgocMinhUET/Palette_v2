@@ -23,9 +23,12 @@ def _lazy_yolo(weights):
     return YOLO(weights)
 
 
-def run_on_dir(frames_dir, weights, conf=0.25, iou=0.5, device=None, imgsz=1280):
+def run_on_dir(frames_dir, weights, conf=0.25, iou=0.5, device=None, imgsz=1280, stream=True):
     """
     Run YOLOv8 on all PNGs in `frames_dir`.
+
+    stream=True (default): one frame at a time — avoids CUDA OOM when folders
+    have 100+ frames at imgsz=1280 (build_real_profile decoded dirs).
 
     Returns: list of dict per frame (sorted by filename)
         {
@@ -41,7 +44,7 @@ def run_on_dir(frames_dir, weights, conf=0.25, iou=0.5, device=None, imgsz=1280)
     if not files:
         return []
 
-    predict_kwargs = dict(conf=conf, iou=iou, imgsz=imgsz, verbose=False)
+    predict_kwargs = dict(conf=conf, iou=iou, imgsz=imgsz, verbose=False, stream=stream)
     if device is not None:
         predict_kwargs["device"] = device
 
